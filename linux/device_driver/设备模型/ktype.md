@@ -11,8 +11,8 @@ struct kobj_type {
      //该种类型的kobject的文件系统（sysfs）接口
      const struct sysfs_ops *sysfs_ops;
      
-     //该种类型的kobject的attribute列表，attribute是一个文件，
-     //用于开放给用户空间去配置驱动的
+     //该种类型的kobject的attribute列表（二级指针说明可能包含），
+     //attribute是一个文件，用于开放给用户空间去配置驱动的，
      struct attribute **default_attrs;
  
      const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);

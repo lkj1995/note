@@ -43,5 +43,38 @@ struct kobject {
 
 ### Kobject和Ktype机制理解
 
-1. Kobject保存了一个引用计数，当计数值为0时，会自动释放，因此内存必须是动态分配。
-2. 释放的时候，还需释放包含Kobject的数据结构（驱动开发者定义的），因此需要通过Ktype来实现，调用release，因为驱动开发者才知道该Kobject嵌入到哪里了。
+- Kobject保存了一个引用计数，当计数值为0时，会自动释放，因此内存必须是动态分配。
+
+- 释放的时候，还需释放包含Kobject的数据结构（驱动开发者定义的），因此需要通过Ktype来实现，调用Ktype的release函数来对整个结构体进行析构（kobject是一个基类，因此其可嵌入其他结构，使用container_of()来获取）
+
+
+
+### 初始化
+
+```c
+void kobject_init();
+void kobject_set_name();
+```
+
+### 引用计数的操作
+
+```c
+struct kobject* kobject_get(struct kobject* kobj);
+void kobject_put(struct kobject* kobj);
+```
+
+### 添加到Kset
+
+- kobject不必在sysfs中表示，但kset中的每一个kobject都将在sysfs中表述
+
+- 创建一个对象时，通常要把kobject添加到kset
+
+  - 先把kobject的kset成员指向目的kset
+
+  - 然后将kobject传递到函数
+
+    ```c
+    int kboject_add(struct kobject* kobj);
+    ```
+
+    
