@@ -9,7 +9,7 @@
 
   - 普通attribute
 
-    ```
+    ```C
     /* include/linux/sysfs.h, line 26 */
     struct attribute {
        const char *name;
@@ -26,7 +26,7 @@
 
   - 二进制attribute
 
-    ```
+    ```C
     /* include/linux/sysfs.h, line 100 */
     struct bin_attribute {
        struct attribute    attr;
@@ -43,7 +43,7 @@
 
   - 所有的文件系统，都会定义一个struct file_operations变量，用于描述本文件系统的操作接口，sysfs也不例外
 
-    ```
+    ```C
     /* fs/sysfs/file.c, line 472 */
     const struct file_operations sysfs_file_operations = {
         .read       = sysfs_read_file,
