@@ -2,13 +2,13 @@
 
 ```C
 struct kobj_type {
-         void (*release)(struct kobject *kobj);//释放kobj的数据结构的内存*/
-         const struct sysfs_ops *sysfs_ops;/*kobj的sysfs接口*/
-         struct attribute **default_attrs;       /* use default_groups instead */
-         const struct attribute_group **default_groups;
-         const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
-         const void *(*namespace)(struct kobject *kobj);
-         void (*get_ownership)(struct kobject *kobj, kuid_t *uid, kgid_t *gid);
+		void (*release)(struct kobject *kobj);/*处理对象终结的回调函数*/
+        const struct sysfs_ops *sysfs_ops;/*kobj的sysfs接口*/
+        struct attribute **default_attrs;/*use default_groups instead*/
+        const struct attribute_group **default_groups;
+        const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
+        const void *(*namespace)(struct kobject *kobj);
+        void (*get_ownership)(struct kobject *kobj, kuid_t *uid, kgid_t *gid);
  };
 ```
 

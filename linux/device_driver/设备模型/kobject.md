@@ -1,24 +1,30 @@
-### 数据结构
+### kobject
 
 ```C
 struct kobject {
-          const char              *name; /*Kobj的名称，同时也是sysfs中的目录名称*/
-          struct list_head        entry;/*用于将Kobj加入到Kset中管理*/
+          const char              *name; /*sysfs中的目录名*/
+          struct list_head        entry;/*用于Kobj挂到Kset->list中管理*/
           struct kobject          *parent;/*指向父kobj，形成层次结构*/
-          struct kset             *kset;/*该kobject属于的Kset。可以为NULL*/
-          struct kobj_type        *ktype;/*Kobj必须有ktype*/
-          struct kernfs_node      *sd; /* sysfs directory entry */
+          struct kset             *kset;/*该kobj所属的Kset*/
+          struct kobj_type        *ktype;/*每个Kobj对应一个ktype*/
+          struct kernfs_node      *sd; /*对应sysfs对象，基于kernfs_node实现*/
           struct kref             kref;/*引用计数，当大于0时必须存在*/
 #ifdef CONFIG_DEBUG_KOBJECT_RELEASE
           struct delayed_work     release;
 #endif
           unsigned int state_initialized:1;/*该Kobj是否初始化*/
           unsigned int state_in_sysfs:1;/*Kobj是否已存在sysfs*/
-          unsigned int state_add_uevent_sent:1;/*是否已向用户空间发送add uevent*/
+    
+          /*当发送KOBJ_ADD时，置位，提示已向用户空间发送ADD*/
+          unsigned int state_add_uevent_sent:1;
+          /*当发送KOBJ_REMOVE时，置位，提示已向用户空间发送REMOVE*/
           unsigned int state_remove_uevent_sent:1;
+    
           unsigned int uevent_suppress:1;/*为1，则忽略所有上报的uevent*/
 };
 ```
+
+### kernfs_node
 
 ```C
 /*
@@ -69,6 +75,8 @@ struct kernfs_node {
 };
 ```
 
+### kernfs_elem_attr
+
 ```C
 struct kernfs_elem_attr {
 	const struct kernfs_ops	*ops;
@@ -78,12 +86,52 @@ struct kernfs_elem_attr {
 };
 ```
 
+### get
+
+```C
+/**
+ * kobject_get() - Increment refcount for object.
+ * @kobj: object.
+ */
+struct kobject *kobject_get(struct kobject *kobj)
+{
+	if (kobj) {
+		if (!kobj->state_initialized) /*未初始化*/
+			WARN(1, KERN_WARNING
+				"kobject: '%s' (%p): is not initialized, yet kobject_get() is being called.\n",
+			     kobject_name(kobj), kobj);
+		kref_get(&kobj->kref); /*kobj->kref += 1*/
+	}
+	return kobj;
+}
+```
+
+### put
+
+```C
+/**
+ * kobject_put() - Decrement refcount for object.
+ * @kobj: object.
+ *
+ * Decrement the refcount, and if 0, call kobject_cleanup().
+ */
+void kobject_put(struct kobject *kobj)
+{
+	if (kobj) {
+		if (!kobj->state_initialized)
+			WARN(1, KERN_WARNING
+				"kobject: '%s' (%p): is not initialized, yet kobject_put() is being called.\n",
+			     kobject_name(kobj), kobj);
+        /*kobj->kref -= 1,如果减到0，执行kobject_release*/
+		kref_put(&kobj->kref, kobject_release);
+        
+	}
+}
+```
 
 
-### 驱动层kobj的init
 
-- 申请动态内存或静态内存
-- kobj记录ktype，并对kobj的成员设置初始默认值
+### kobject_create
 
 ```C
 /**
@@ -110,7 +158,7 @@ struct kobject *kobject_create(void)
 }
 ```
 
-
+### kobject_init
 
 ```c
 /**
@@ -154,6 +202,8 @@ error:
 
 ```
 
+### kobject_init_internal
+
 ```C
 static void kobject_init_internal(struct kobject *kobj)
 {
@@ -164,9 +214,11 @@ static void kobject_init_internal(struct kobject *kobj)
 	kobj->state_in_sysfs = 0;/*尚未存在sysfs中，设为0*/ 
 	kobj->state_add_uevent_sent = 0; 
 	kobj->state_remove_uevent_sent = 0;
-	kobj->state_initialized = 1;/*已初始化*/
+	kobj->state_initialized = 1;/*kobj已初始化,置1*/
 }
 ```
+
+### kobject_set_name
 
 ```C
 /**
@@ -191,12 +243,7 @@ int kobject_set_name(struct kobject *kobj, const char *fmt, ...)
 }
 ```
 
-
-
-### 驱动层kobj的add
-
-- 配置好parent指针和kset指针的指向
-  - 
+### kobject_add
 
 ```C
 /**
@@ -255,6 +302,8 @@ int kobject_add(struct kobject *kobj, struct kobject *parent,
 }
 ```
 
+### kobject_add_varg
+
 ```C
 static __printf(3, 0) int kobject_add_varg(struct kobject *kobj,
 					   struct kobject *parent,
@@ -268,9 +317,16 @@ static __printf(3, 0) int kobject_add_varg(struct kobject *kobj,
 		return retval;
 	}
 	kobj->parent = parent; /*记录parent，可能为null*/
-	return kobject_add_internal(kobj);/*继续传递*/
+    /*
+     * 如存在kset，kobj加入list
+     * 创建kernfs_node目录，及其attr属性文件
+     */
+	return kobject_add_internal(kobj);
+    
 }
 ```
+
+### kobject_add_internal
 
 ```C
 static int kobject_add_internal(struct kobject *kobj)
@@ -325,6 +381,8 @@ static int kobject_add_internal(struct kobject *kobj)
 }
 ```
 
+### kobj_kset_join
+
 ```C
 /* add the kobject to its kset's list */
 static void kobj_kset_join(struct kobject *kobj)
@@ -338,6 +396,8 @@ static void kobj_kset_join(struct kobject *kobj)
 	spin_unlock(&kobj->kset->list_lock);/*解锁*/
 }
 ```
+
+### create_dir
 
 ```C
 static int create_dir(struct kobject *kobj)
@@ -400,6 +460,8 @@ static int create_dir(struct kobject *kobj)
 }
 ```
 
+### kobject_namespace
+
 ```C
 /**
  * kobject_namespace() - Return @kobj's namespace tag.
@@ -419,6 +481,8 @@ const void *kobject_namespace(struct kobject *kobj)
 	return kobj->ktype->namespace(kobj);/*函数指针，应该是在驱动层被定义，返回一个字符串指针*/
 }
 ```
+
+### sysfs_create_dir_ns
 
 
 ```C
@@ -854,7 +918,8 @@ static int create_files(struct kernfs_node *parent, struct kobject *kobj,
 	int error = 0, i;
 
 	if (grp->attrs) {/*至少存在1个attr*/
-		for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) { /*遍历，并检查错误error*/
+		for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) { 
+            /*遍历，并检查错误error*/
 			umode_t mode = (*attr)->mode;
 
 			/*
@@ -1016,18 +1081,6 @@ const struct kobj_ns_type_operations *kobj_child_ns_ops(struct kobject *parent)
 
 
 
-
-
-
-
-
-
-
-
-
-- Kobject保存了一个引用计数，当计数值为0时，会自动释放，因此内存必须是动态分配。
-
-- 释放的时候，还需释放包含Kobject的数据结构（驱动开发者定义的），因此需要通过Ktype来实现，调用Ktype的release函数来对整个结构体进行析构（kobject是一个基类，因此其可嵌入其他结构，使用container_of()来获取）
 
 
 
