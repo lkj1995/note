@@ -649,7 +649,7 @@ int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
 
 ```C
 int sysfs_add_file_mode_ns(struct kernfs_node *parent,
-                           /*因为是在/sys/xxx/下创建属性目录，所以父目录为kobj->sd*/
+               /*传入的kobj就是parent*/
 			   const struct attribute *attr, bool is_bin,
 			   umode_t mode, kuid_t uid, kgid_t gid, const void *ns)
 {

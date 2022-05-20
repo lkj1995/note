@@ -88,7 +88,7 @@ struct bus_type {
 
 	const struct iommu_ops *iommu_ops; 
 
-	struct subsys_private *p; /*私有指针，只有驱动内核才能使用*/
+	struct subsys_private *p; /*子系统私有指针*/
 	struct lock_class_key lock_key;
 
 	bool need_parent_lock;
@@ -124,20 +124,20 @@ struct bus_type {
  * driver core should ever touch these fields.
  */
 struct subsys_private {
-	struct kset subsys;/*bus自己的节点*/
-	struct kset *devices_kset;/*挂到此指针的设备kset*/
+	struct kset subsys;/*bus的kset 如：/sys/bus/mybus/ */
+	struct kset *devices_kset;/*设备kset 如：/sys/bus/mybus/devices */
 	struct list_head interfaces;
 	struct mutex mutex;
 
-	struct kset *drivers_kset;/*挂到此指针的驱动kset*/
+	struct kset *drivers_kset;/*驱动kset 如：/sys/bus/mybus/drivers */
 	struct klist klist_devices;/*保存了本bus下所有的device指针*/
-	struct klist klist_drivers;/*保存了本bus下所有的device_driver指针*/
+	struct klist klist_drivers;/*保存了所有的device和device_driver，方便查找*/
 	struct blocking_notifier_head bus_notifier;
 	unsigned int drivers_autoprobe:1;
-	struct bus_type *bus;
+	struct bus_type *bus; /*父bus*/
 
 	struct kset glue_dirs; 
-	struct class *class;/*指向被分配的class*/
+	struct class *class;/*class*/
 };
 ```
 
@@ -167,39 +167,65 @@ int bus_register(struct bus_type *bus)
 	int retval;
 	struct subsys_private *priv;
 	struct lock_class_key *key = &bus->lock_key;
-    /*申请一个私有结构subsys_private的内存*/
+    /*申请subsys_private内存*/
 	priv = kzalloc(sizeof(struct subsys_private), GFP_KERNEL); 
 	if (!priv)
 		return -ENOMEM;
 
-	priv->bus = bus; /*指向回bus作记录*/
-	bus->p = priv; /*记录创建的subsys_private结构*/
-    /*操作了bus_notifier，不懂。。*/
+	priv->bus = bus; /*priv->bus保存对应bus*/
+	bus->p = priv; /*bus->p保存其索引*/
+    
+    /*操作了bus_notifier*/
 	BLOCKING_INIT_NOTIFIER_HEAD(&priv->bus_notifier);
-    /*对本bus的kobj命名*/
+    
+    /*对bus的kobj命名*/
 	retval = kobject_set_name(&priv->subsys.kobj, "%s", bus->name);
 	if (retval)
 		goto out;
-    /*bus已写好的处理函数*/
-	priv->subsys.kobj.kset = bus_kset;
-	priv->subsys.kobj.ktype = &bus_ktype;
+    
+   /* static struct kset *bus_kset;
+    * 
+    * int __init buses_init(void)
+    * {
+    *  在这被初始化
+	*  bus_kset = kset_create_and_add("bus", &bus_uevent_ops, NULL);
+	*  if (!bus_kset)
+    *      return -ENOMEM;
+    *
+	*  system_kset = kset_create_and_add("system", NULL, &devices_kset->kobj);
+	*  if (!system_kset)
+	* 	   return -ENOMEM;
+    * 
+	*  return 0;
+    * } 
+    */
+    
+	priv->subsys.kobj.kset = bus_kset;/*父bus为bus_kset*/
+    
+    /*
+     *  static struct kobj_type bus_ktype = {
+     * 	   .sysfs_ops      = &bus_sysfs_ops,
+     *     .release        = bus_release,
+     *  }; 
+     */   
+	priv->subsys.kobj.ktype = &bus_ktype; /*通用bus_ktype*/
 	priv->drivers_autoprobe = 1;
-    /*将priv->subsys注册到内核中，向sysfs中添加对应的目录*/
+    /*创建目录 /sys/bus/mybus */
 	retval = kset_register(&priv->subsys);
 	if (retval)
 		goto out;
-    /*创建一个bus_uevent的属性文件*/
+    /*创建属性文件 /sys/bus/mybus/uevent */
 	retval = bus_create_file(bus, &bus_attr_uevent);
 	if (retval)
 		goto bus_uevent_fail;
-   /*创建一个devices的kset，add目录和属性文件*/
+    /*创建目录 /sys/bus/mybus/devices */
 	priv->devices_kset = kset_create_and_add("devices", NULL,
 						 &priv->subsys.kobj);
 	if (!priv->devices_kset) {
 		retval = -ENOMEM;
 		goto bus_devices_fail;
 	}
-   /*创建一个drivers的kset，add目录和属性到sysfs*/
+    /*创建目录 /sys/bus/mybus/drivers */
 	priv->drivers_kset = kset_create_and_add("drivers", NULL,
 						 &priv->subsys.kobj);
 	if (!priv->drivers_kset) {
@@ -208,17 +234,20 @@ int bus_register(struct bus_type *bus)
 	}
 
 	INIT_LIST_HEAD(&priv->interfaces);
-	__mutex_init(&priv->mutex, "subsys mutex", key);/*初始化互斥量*/
+	__mutex_init(&priv->mutex, "subsys mutex", key);/*初始化mutex*/
 	klist_init(&priv->klist_devices, klist_devices_get, klist_devices_put);
 	klist_init(&priv->klist_drivers, NULL, NULL); /*初始化klist*/
+    
     /*
-     * 在bus下添加drivers_probe和drivers_autoprobe属性文件
-     * drivers_probe：允许用户空间主动出发指定bus下的device_driver的probe动作
-     * drivers_autoprobe：是否在device或device_driver添加到内核时，自动执行probe*/
+     * 创建属性文件 /sys/bus/mybus/driver_autoprobe   
+     *            /sys/bus/mybus/driver_probe
+     * drivers_probe：允许用户空间出发指定bus的device_driver的probe动作
+     * drivers_autoprobe：在device或device_driver新增时，自动执行probe
+     */
 	retval = add_probe_files(bus);
 	if (retval)
 		goto bus_probe_files_fail;
-    /*创建bus_gruop自身的属性文件*/
+    /*创建bus_gruop属性文件*/
 	retval = bus_add_groups(bus, bus->bus_groups);
 	if (retval)
 		goto bus_groups_fail;
@@ -265,7 +294,7 @@ int bus_create_file(struct bus_type *bus, struct bus_attribute *attr)
 static struct bus_type *bus_get(struct bus_type *bus)
 {
         if (bus) {
-                kset_get(&bus->p->subsys); /*bus的kobj，本质就是调用kobj_get*/
+                kset_get(&bus->p->subsys); /*bus的kobj调用kobj_get*/
                 return bus;
         }
         return NULL;
@@ -321,11 +350,11 @@ void klist_init(struct klist *k, void (*get)(struct klist_node *),
 static int add_probe_files(struct bus_type *bus)
 {
 	int retval;
-    /*创建属性文件*/
+    /*创建driver_probe属性文件*/
 	retval = bus_create_file(bus, &bus_attr_drivers_probe);
 	if (retval)
 		goto out;
-    /*创建autoprobe属性文件*/
+    /*创建driver_autoprobe属性文件*/
 	retval = bus_create_file(bus, &bus_attr_drivers_autoprobe);
 	if (retval)
 		bus_remove_file(bus, &bus_attr_drivers_probe);
@@ -334,11 +363,87 @@ out:
 }
 ```
 
+### bus_add_groups
+
 ```C
 static int bus_add_groups(struct bus_type *bus,
 			  const struct attribute_group **groups)
 {
+    /*为什么attr_group为空，其kset能成功创建，而不会被unregister*/
 	return sysfs_create_groups(&bus->p->subsys.kobj, groups);
+}
+```
+
+### bus_sysfs_ops
+
+```c
+static const struct sysfs_ops bus_sysfs_ops = {
+	.show	= bus_attr_show,
+	.store	= bus_attr_store,
+};
+```
+
+### bus_attr_show
+
+```C
+/*
+ * sysfs bindings for buses sysfs对buses的绑定
+ */
+static ssize_t bus_attr_show(struct kobject *kobj, struct attribute *attr,
+			     char *buf)
+{
+	struct bus_attribute *bus_attr = to_bus_attr(attr);
+	struct subsys_private *subsys_priv = to_subsys_private(kobj);
+	ssize_t ret = 0;
+
+	if (bus_attr->show)
+		ret = bus_attr->show(subsys_priv->bus, buf);
+	return ret;
+}
+```
+
+### bus_attr_store
+
+```C
+static ssize_t bus_attr_store(struct kobject *kobj, struct attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct bus_attribute *bus_attr = to_bus_attr(attr);
+	struct subsys_private *subsys_priv = to_subsys_private(kobj);
+	ssize_t ret = 0;
+
+	if (bus_attr->store)
+		ret = bus_attr->store(subsys_priv->bus, buf, count);
+	return ret;
+}
+```
+
+```C
+#define to_bus_attr(_attr) container_of(_attr, struct bus_attribute, attr)
+#define to_subsys_private(obj) container_of(obj, struct subsys_private, subsys.kobj)
+```
+
+### bus_unregister
+
+```C
+/**
+ * bus_unregister - remove a bus from the system
+ * @bus: bus.
+ *
+ * Unregister the child subsystems and the bus itself.
+ * Finally, we call bus_put() to release the refcount
+ */
+void bus_unregister(struct bus_type *bus)
+{
+	pr_debug("bus: '%s': unregistering\n", bus->name);
+	if (bus->dev_root)
+		device_unregister(bus->dev_root);
+	bus_remove_groups(bus, bus->bus_groups);
+	remove_probe_files(bus);
+	kset_unregister(bus->p->drivers_kset);
+	kset_unregister(bus->p->devices_kset);
+	bus_remove_file(bus, &bus_attr_uevent);
+	kset_unregister(&bus->p->subsys);
 }
 ```
 

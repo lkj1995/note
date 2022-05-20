@@ -193,6 +193,98 @@ struct device {
 };
 ```
 
+### device_private
+
+```C
+/**
+ * struct device_private - structure to hold the private to the driver core portions of the device structure.
+ *
+ * @klist_children - klist containing all children of this device
+ * @knode_parent - node in sibling list
+ * @knode_driver - node in driver list
+ * @knode_bus - node in bus list
+ * @knode_class - node in class list
+ * @deferred_probe - entry in deferred_probe_list which is used to retry the
+ *	binding of drivers which were unable to get all the resources needed by
+ *	the device; typically because it depends on another driver getting
+ *	probed first.
+ * @async_driver - pointer to device driver awaiting probe via async_probe
+ * @device - pointer back to the struct device that this structure is
+ * associated with.
+ * @dead - This device is currently either in the process of or has been
+ *	removed from the system. Any asynchronous events scheduled for this
+ *	device should exit without taking any action.
+ *
+ * Nothing outside of the driver core should ever touch these fields.
+ */
+struct device_private {
+	struct klist klist_children;
+	struct klist_node knode_parent;
+	struct klist_node knode_driver;
+	struct klist_node knode_bus;
+	struct klist_node knode_class;
+	struct list_head deferred_probe;
+	struct device_driver *async_driver;
+	char *deferred_probe_reason;
+	struct device *device;
+	u8 dead:1;
+};
+```
+
+### device_type
+
+```C
+/*
+ * The type of device, "struct device" is embedded in. A class
+ * or bus can contain devices of different types
+ * like "partitions" and "disks", "mouse" and "event".
+ * This identifies the device type and carries type-specific
+ * information, equivalent to the kobj_type of a kobject.
+ * If "name" is specified, the uevent will contain it in
+ * the DEVTYPE variable.
+ */
+struct device_type {
+	const char *name;
+	const struct attribute_group **groups;
+	int (*uevent)(struct device *dev, struct kobj_uevent_env *env);
+	char *(*devnode)(struct device *dev, umode_t *mode,
+			 kuid_t *uid, kgid_t *gid);
+	void (*release)(struct device *dev);
+
+	const struct dev_pm_ops *pm;
+};
+```
+
+### device_create_file
+
+```C
+/**
+ * device_create_file - create sysfs attribute file for device.
+ * @dev: device.
+ * @attr: device attribute descriptor.
+ */
+int device_create_file(struct device *dev,
+		       const struct device_attribute *attr)
+{
+	int error = 0;
+
+	if (dev) {
+		WARN(((attr->attr.mode & S_IWUGO) && !attr->store),
+			"Attribute %s: write permission without 'store'\n",
+			attr->attr.name);
+		WARN(((attr->attr.mode & S_IRUGO) && !attr->show),
+			"Attribute %s: read permission without 'show'\n",
+			attr->attr.name);
+        /*在dev->kobj目录下创建attr*/
+		error = sysfs_create_file(&dev->kobj, &attr->attr);
+	}
+
+	return error;
+}
+```
+
+
+
 ### device_register
 
 ```C
@@ -246,17 +338,29 @@ int device_register(struct device *dev)
  */
 void device_initialize(struct device *dev)
 {
-	dev->kobj.kset = devices_kset;
-	kobject_init(&dev->kobj, &device_ktype);
-	INIT_LIST_HEAD(&dev->dma_pools);
+    /*父kset 位置：/sys/devices/ */
+	dev->kobj.kset = devices_kset; 
+    
+    /*
+     * static struct kobj_type device_ktype = {
+     *     .release        = device_release,
+     *     .sysfs_ops      = &dev_sysfs_ops,
+     *     .namespace      = device_namespace,
+     *     .get_ownership  = device_get_ownership,
+     * };     
+     */    
+	kobject_init(&dev->kobj, &device_ktype);/*初始化kobj，并记录ktype*/
+    
+    
+	INIT_LIST_HEAD(&dev->dma_pools);/*list初始化*/
 	mutex_init(&dev->mutex);
 #ifdef CONFIG_PROVE_LOCKING
 	mutex_init(&dev->lockdep_mutex);
 #endif
 	lockdep_set_novalidate_class(&dev->mutex);
-	spin_lock_init(&dev->devres_lock);
-	INIT_LIST_HEAD(&dev->devres_head);
-	device_pm_init(dev);
+	spin_lock_init(&dev->devres_lock);/*自旋锁初始化*/
+	INIT_LIST_HEAD(&dev->devres_head);/*list初始化*/
+	device_pm_init(dev);/*电源管理初始化*/
 	set_dev_node(dev, -1);
 #ifdef CONFIG_GENERIC_MSI_IRQ
 	INIT_LIST_HEAD(&dev->msi_list);
@@ -268,6 +372,41 @@ void device_initialize(struct device *dev)
 	dev->links.status = DL_DEV_NO_DRIVER;
 }
 ```
+
+### devices_init
+
+```C
+/* /sys/devices/ */
+struct kset *devices_kset;
+
+int __init devices_init(void)
+{   /*在这里被初始化*/
+	devices_kset = kset_create_and_add("devices", &device_uevent_ops, NULL);
+	if (!devices_kset)
+		return -ENOMEM;
+	dev_kobj = kobject_create_and_add("dev", NULL);
+	if (!dev_kobj)
+		goto dev_kobj_err;
+	sysfs_dev_block_kobj = kobject_create_and_add("block", dev_kobj);
+	if (!sysfs_dev_block_kobj)
+		goto block_kobj_err;
+	sysfs_dev_char_kobj = kobject_create_and_add("char", dev_kobj);
+	if (!sysfs_dev_char_kobj)
+		goto char_kobj_err;
+
+	return 0;
+
+ char_kobj_err:
+	kobject_put(sysfs_dev_block_kobj);
+ block_kobj_err:
+	kobject_put(dev_kobj);
+ dev_kobj_err:
+	kset_unregister(devices_kset);
+	return -ENOMEM;
+}
+```
+
+
 
 ### device_add
 
@@ -306,13 +445,15 @@ int device_add(struct device *dev)
 	struct class_interface *class_intf;
 	int error = -EINVAL;
 	struct kobject *glue_dir = NULL;
-
+    
+    /*调用kobj_get,增加ref计数*/
 	dev = get_device(dev);
 	if (!dev)
 		goto done;
 
 	if (!dev->p) {
-		error = device_private_init(dev);
+        /*创建私有结构并保存在p，初始化一些操作*/
+		error = device_private_init(dev); 
 		if (error)
 			goto done;
 	}
@@ -322,30 +463,34 @@ int device_add(struct device *dev)
 	 * some day, we need to initialize the name. We prevent reading back
 	 * the name, and force the use of dev_name()
 	 */
-	if (dev->init_name) {
+	if (dev->init_name) /*如果存在命名，则转移到kobj->name*/
 		dev_set_name(dev, "%s", dev->init_name);
 		dev->init_name = NULL;
 	}
-
+    /*上面可能存在失败，因此会dev_name返回init name 或 kobj->name*/
 	/* subsystems can specify simple device enumeration */
 	if (!dev_name(dev) && dev->bus && dev->bus->dev_name)
-		dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id);
+		dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id); 
+      /*自动根据bus设置命名，如spi1 spi2*/
 
-	if (!dev_name(dev)) {
+	if (!dev_name(dev)) { /*如果还是没有命名成功，报错*/
 		error = -EINVAL;
 		goto name_error;
 	}
 
 	pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
 
+    /*根据dev->parent->kobj返回其父dev，并增加父dev的kobj的ref计数*/
 	parent = get_device(dev->parent);
+
+    /*在父class中添加kobj目录 待定*/
 	kobj = get_device_parent(dev, parent);
 	if (IS_ERR(kobj)) {
 		error = PTR_ERR(kobj);
 		goto parent_error;
 	}
 	if (kobj)
-		dev->kobj.parent = kobj;
+		dev->kobj.parent = kobj; 
 
 	/* use parent numa_node */
 	if (parent && (dev_to_node(dev) == NUMA_NO_NODE))
@@ -363,15 +508,15 @@ int device_add(struct device *dev)
 	error = device_platform_notify(dev, KOBJ_ADD);
 	if (error)
 		goto platform_error;
-
+    /*在目录 /sys/bus/mybus/devices/mydev/ 创建uevent属性文件 */
 	error = device_create_file(dev, &dev_attr_uevent);
 	if (error)
 		goto attrError;
-
+    /*待定，还没看懂*/
 	error = device_add_class_symlinks(dev);
 	if (error)
 		goto SymlinkError;
-	error = device_add_attrs(dev);
+	error = device_add_attrs(dev);/*添加dev->g'r*/
 	if (error)
 		goto AttrsError;
 	error = bus_add_device(dev);/*主要处理逻辑，添加device*/
@@ -472,6 +617,114 @@ name_error:
 }
 ```
 
+### device_private_init
+
+```C
+static int device_private_init(struct device *dev)
+{
+	dev->p = kzalloc(sizeof(*dev->p), GFP_KERNEL); /*申请device_private内存*/
+	if (!dev->p)
+		return -ENOMEM;
+	dev->p->device = dev; /*互相记录*/
+	klist_init(&dev->p->klist_children, klist_children_get,
+		   klist_children_put);
+	INIT_LIST_HEAD(&dev->p->deferred_probe);
+	return 0;
+}
+```
+
+### dev_set_name
+
+```
+/**
+ * dev_set_name - set a device name
+ * @dev: device
+ * @fmt: format string for the device's name
+ */
+int dev_set_name(struct device *dev, const char *fmt, ...)
+{
+	va_list vargs;
+	int err;
+
+	va_start(vargs, fmt);
+	err = kobject_set_name_vargs(&dev->kobj, fmt, vargs);
+	va_end(vargs);
+	return err;
+}
+```
+
+### get_device_parent
+
+```C
+static struct kobject *get_device_parent(struct device *dev,
+					 struct device *parent)
+{
+	if (dev->class) {
+		struct kobject *kobj = NULL;
+		struct kobject *parent_kobj;
+		struct kobject *k;
+
+#ifdef CONFIG_BLOCK
+		/* block disks show up in /sys/block */
+		if (sysfs_deprecated && dev->class == &block_class) {
+			if (parent && parent->class == &block_class)
+				return &parent->kobj;
+			return &block_class.p->subsys.kobj;
+		}
+#endif
+
+		/*
+		 * If we have no parent, we live in "virtual".
+		 * Class-devices with a non class-device as parent, live
+		 * in a "glue" directory to prevent namespace collisions.
+		 */
+		if (parent == NULL)
+			parent_kobj = virtual_device_parent(dev);
+		else if (parent->class && !dev->class->ns_type)
+			return &parent->kobj;
+		else
+			parent_kobj = &parent->kobj;
+
+		mutex_lock(&gdp_mutex);
+
+		/* find our class-directory at the parent and reference it */
+		spin_lock(&dev->class->p->glue_dirs.list_lock);
+		list_for_each_entry(k, &dev->class->p->glue_dirs.list, entry)
+			if (k->parent == parent_kobj) {
+				kobj = kobject_get(k);
+				break;
+			}
+		spin_unlock(&dev->class->p->glue_dirs.list_lock);
+		if (kobj) {
+			mutex_unlock(&gdp_mutex);
+			return kobj;
+		}
+
+		/* or create a new class-directory at the parent device */
+		k = class_dir_create_and_add(dev->class, parent_kobj);
+		/* do not emit an uevent for this simple "glue" directory */
+		mutex_unlock(&gdp_mutex);
+		return k;
+	}
+
+	/* subsystems can specify a default root directory for their devices */
+	if (!parent && dev->bus && dev->bus->dev_root)
+		return &dev->bus->dev_root->kobj;
+
+	if (parent)
+		return &parent->kobj;
+	return NULL;
+}
+```
+
+
+
+
+
+
+
+
+
 ### bus_add_device
 
 ```C
@@ -512,6 +765,79 @@ out_groups:
 	device_remove_groups(dev, bus->dev_groups);
 out_put:
 	bus_put(dev->bus);
+	return error;
+}
+```
+
+### dev_name
+
+```C
+static inline const char *dev_name(const struct device *dev)
+{
+        /* Use the init name until the kobject becomes available */
+        if (dev->init_name)
+                return dev->init_name;
+
+        return kobject_name(&dev->kobj);
+}
+```
+
+### device_add_class_symlinks
+
+```C
+static int device_add_class_symlinks(struct device *dev)
+{
+	struct device_node *of_node = dev_of_node(dev);
+	int error;
+
+	if (of_node) {
+        /*链接了device tree*/
+		error = sysfs_create_link(&dev->kobj, of_node_kobj(of_node), "of_node");
+		if (error)
+			dev_warn(dev, "Error %d creating of_node link\n",error);
+		/* An error here doesn't warrant bringing down the device */
+	}
+
+	if (!dev->class)
+		return 0;
+    /* 
+     * 在目录 /sys/bus/mybus/devices/mydev 
+     * 创建名为"subsystem"的symlink，指向dev->class->p->subsys.kobj
+     */
+	error = sysfs_create_link(&dev->kobj,
+				  &dev->class->p->subsys.kobj,
+				  "subsystem");
+	if (error)
+		goto out_devnode;
+
+	if (dev->parent && device_is_not_partition(dev)) {
+		error = sysfs_create_link(&dev->kobj, &dev->parent->kobj,
+					  "device");
+		if (error)
+			goto out_subsys;
+	}
+
+#ifdef CONFIG_BLOCK
+	/* /sys/block has directories and does not need symlinks */
+	if (sysfs_deprecated && dev->class == &block_class)
+		return 0;
+#endif
+
+	/* link in the class directory pointing to the device */
+	error = sysfs_create_link(&dev->class->p->subsys.kobj,
+				  &dev->kobj, dev_name(dev));
+	if (error)
+		goto out_device;
+
+	return 0;
+
+out_device:
+	sysfs_remove_link(&dev->kobj, "device");
+
+out_subsys:
+	sysfs_remove_link(&dev->kobj, "subsystem");
+out_devnode:
+	sysfs_remove_link(&dev->kobj, "of_node");
 	return error;
 }
 ```
