@@ -1,305 +1,20 @@
-#### fdt ：Flattened Device Tree data format
-
-### fdt_header
-
-```c
-struct fdt_header {
-
-	fdt32_t magic;			     /* magic word FDT_MAGIC 0xd00dfeed*/
-    
-	/*
-	 * 整个dtb的大小，包含memory reservation block, structure block，strings block
-	 * 及用于两个块之间的内存对齐的间隙大小
-	 */
-	fdt32_t totalsize;		     /* total size of DT block */
-    
-    /*structure block的偏移位置*/
-	fdt32_t off_dt_struct;		 /* offset to structure */
-    
-    /*strings block的偏移位置*/
-	fdt32_t off_dt_strings;		 /* offset to strings */
-    
-    /*memory reservation block的偏移位置*/
-	fdt32_t off_mem_rsvmap;		 /* offset to memory reserve map */
-    
-    /*顾名思义，不同的版本解析的格式不同*/
-	fdt32_t version;		     /* format version */
-    
-    /*兼容的版本*/
-	fdt32_t last_comp_version;	 /* last compatible version */
-
-	/* version 2 fields below */
-	fdt32_t boot_cpuid_phys;	 /* Which physical CPU id we'rebooting on */
-	
-	/* version 3 fields below */
-    /*strings block的字节大小*/
-	fdt32_t size_dt_strings;	 /* size of the strings block */
-
-	/* version 17 fields below */
-    /*structure block的字节大小*/
-	fdt32_t size_dt_struct;		 /* size of the structure block */
-};
-```
-
-### setup_machine_fdt
-
-```C
-/**
- * setup_machine_fdt - Machine setup when an dtb was passed to the kernel
- * 当dtb传递到内核后，机器会被启动
- * @dt:	virtual address pointer to dt blob
- * @dt为指向dtb的虚拟地址
- * If a dtb was passed to the kernel, then use it to choose the correct
- * machine_desc and to setup the system.
- * 如果dtb已传递到内核，选择正确的machine_desc启动系统
- */
-const struct machine_desc * __init setup_machine_fdt(void *dt)
-{
-	const struct machine_desc *mdesc;
-	unsigned long dt_root;
-
-	if (!early_init_dt_scan(dt))/*dtb内容检查，保存和设置属性*/
-		return NULL;
-
-	mdesc = of_flat_dt_match_machine(NULL, arch_get_next_mach);
-	if (!mdesc)
-		machine_halt();
-
-	dt_root = of_get_flat_dt_root();/*root节点为0 return 0;*/
-	arc_set_early_base_baud(dt_root);/*设置baud频率*/
-
-	return mdesc;
-}
-```
-
-```C
-bool __init early_init_dt_scan(void *params)
-{
-	bool status;
-    /*dtb关键内容进行检查*/
-	status = early_init_dt_verify(params);
-	if (!status)
-		return false;
-    /*检查chosen，保存cell属性，设置memory属性*/
-	early_init_dt_scan_nodes();
-	return true;
-}
-```
-
-```C
-bool __init early_init_dt_verify(void *params)
-{
-	if (!params)
-		return false;
-
-	/* check device tree validity */
-    /*对整个dtb的关键部分进行检查，magic，size，bounds等*/
-	if (fdt_check_header(params))
-		return false;
-
-	/* Setup flat device-tree pointer */
-    /*记录deb的地址，并进行crc32校验*/
-	initial_boot_params = params;
-	of_fdt_crc32 = crc32_be(~0, initial_boot_params,
-				fdt_totalsize(initial_boot_params));
-	return true;
-}
-```
-
-```C
-int fdt_check_header(const void *fdt)
-{
-	size_t hdrsize;
-
-	if (fdt_magic(fdt) != FDT_MAGIC)/*magic检查，固定内容*/
-		return -FDT_ERR_BADMAGIC;
-	if (!can_assume(LATEST)) {
-        /*
-         * #define FDT_FIRST_SUPPORTED_VERSION     0x02
-         * #define FDT_LAST_SUPPORTED_VERSION      0x11
-         * #define fdt_version(fdt)   (fdt_get_header(fdt, version))
-         * 因结构体成员可能是不对齐的，所以返回对齐的内容
-         * #define fdt_last_comp_version(fdt) (fdt_get_header(fdt, last_comp_version))
-         */
-		if ((fdt_version(fdt) < FDT_FIRST_SUPPORTED_VERSION)/*版本小于0x02*/
-		    || (fdt_last_comp_version(fdt) >
-			FDT_LAST_SUPPORTED_VERSION)) /*版本大于0x11*/
-			return -FDT_ERR_BADVERSION;
-		if (fdt_version(fdt) < fdt_last_comp_version(fdt)) /*小于兼容的版本，错误*/
-			return -FDT_ERR_BADVERSION;
-	}
-	hdrsize = fdt_header_size(fdt);/*获取size*/
-	if (!can_assume(VALID_DTB)) {
-
-		if ((fdt_totalsize(fdt) < hdrsize) /*总size比handler还小，不合理*/
-		    || (fdt_totalsize(fdt) > INT_MAX)) /*#define INT_MAX  ((int)(~0U>>1)) 有符号*/
-			return -FDT_ERR_TRUNCATED;
-
-		/* Bounds check memrsv block */
-        /*(off >= hdrsize) && (off <= totalsize); memrsv块的边界检查*/
-		if (!check_off_(hdrsize, fdt_totalsize(fdt),
-				fdt_off_mem_rsvmap(fdt)))
-			return -FDT_ERR_TRUNCATED;
-	}
-
-	if (!can_assume(VALID_DTB)) {
-		/* Bounds check structure block */
-		if (!can_assume(LATEST) && fdt_version(fdt) < 17) {
-			if (!check_off_(hdrsize, fdt_totalsize(fdt),
-					fdt_off_dt_struct(fdt))) /*off_dt_struct的边界检查*/
-				return -FDT_ERR_TRUNCATED;
-		} else { /*版本大于17，新格式*/
-			if (!check_block_(hdrsize, fdt_totalsize(fdt),
-					  fdt_off_dt_struct(fdt),
-					  fdt_size_dt_struct(fdt)))
-				return -FDT_ERR_TRUNCATED;
-		}
-
-		/* Bounds check strings block */
-		if (!check_block_(hdrsize, fdt_totalsize(fdt),
-				  fdt_off_dt_strings(fdt),
-				  fdt_size_dt_strings(fdt)))
-			return -FDT_ERR_TRUNCATED;
-	}
-
-	return 0;
-}
-```
-
-```C
-void __init early_init_dt_scan_nodes(void)
-{
-	int rc = 0;
-
-	/* Retrieve various information from the /chosen node */
-    /*
-     * 检索 chose的bootargs 
-     * early_init_dt_scan_chosen：回调函数
-     * boot_command_line：不知在哪被填充
-     */
-	rc = of_scan_flat_dt(early_init_dt_scan_chosen, boot_command_line);
-	if (!rc)
-		pr_warn("No chosen node found, continuing without\n");
-
-	/* Initialize {size,address}-cells info */
-    /*提取#size-cells和#address-cells，并保存*/
-	of_scan_flat_dt(early_init_dt_scan_root, NULL);
-
-	/* Setup memory, calling early_init_dt_add_memory_arch */
-    /*提取memory的reg，并具体设置*/
-	of_scan_flat_dt(early_init_dt_scan_memory, NULL);
-}
-
-```
-
-```C
-/**
- * of_scan_flat_dt - scan flattened tree blob and call callback on each.
- * 从btb中，遍历所有的节点，将节点的名字，偏移，嵌套深度，私有数据，传递给it回调函数
- * @it: callback function
- * @data: context data pointer
- *
- * This function is used to scan the flattened device-tree, it is
- * used to extract the memory information at boot before we can
- * unflatten the tree
- * 用于平面的设备树的处理，提取信息，再把设备树进行展开成立体结构（即链表）
- */
-int __init of_scan_flat_dt(int (*it)(unsigned long node,
-				     const char *uname, int depth,
-				     void *data),
-			   void *data)
-{
-	const void *blob = initial_boot_params;
-	const char *pathp;
-	int offset, rc = 0, depth = -1;
-
-	if (!blob)
-		return 0;
-
-	for (offset = fdt_next_node(blob, -1, &depth);
-	     offset >= 0 && depth >= 0 && !rc;
-	     offset = fdt_next_node(blob, offset, &depth)) {
-
-		pathp = fdt_get_name(blob, offset, NULL);
-		rc = it(offset, pathp, depth, data);
-	}
-	return rc;
-}
-```
-
-```C
-/**
- * of_flat_dt_match_machine - Iterate match tables to find matching machine.
- *
- * @default_match: A machine specific ptr to return in case of no match.
- * @get_next_compat: callback function to return next compatible match table.
- *
- * Iterate through machine match tables to find the best match for the machine
- * compatible string in the FDT.
- */
-const void * __init of_flat_dt_match_machine(const void *default_match,
-		const void * (*get_next_compat)(const char * const**))
-{
-	const void *data = NULL;
-	const void *best_data = default_match;
-	const char *const *compat;
-	unsigned long dt_root;
-	unsigned int best_score = ~1, score = 0;
-
-	dt_root = of_get_flat_dt_root(); /*return 0;*/
-	while ((data = get_next_compat(&compat))) {
-		score = of_flat_dt_match(dt_root, compat);
-		if (score > 0 && score < best_score) {
-			best_data = data;
-			best_score = score;
-		}
-	}
-	if (!best_data) {
-		const char *prop;
-		int size;
-
-		pr_err("\n unrecognized device tree list:\n[ ");
-
-		prop = of_get_flat_dt_prop(dt_root, "compatible", &size);
-		if (prop) {
-			while (size > 0) {
-				printk("'%s' ", prop);
-				size -= strlen(prop) + 1;
-				prop += strlen(prop) + 1;
-			}
-		}
-		printk("]\n\n");
-		return NULL;
-	}
-
-	pr_info("Machine model: %s\n", of_flat_dt_get_machine_name());
-
-	return best_data;
-}
-```
-
-
-****
-
-****
-
 ![img](./img/dtb_structure_block.jpg "dtb_structure_block")
 
 ### device_node
 
 ```C
 struct device_node {
-	const char *name;
+	const char *name;/*如果改node存在name属性，该指针指向其内容，否则设置为"<NULL>"*/
    
 	phandle phandle; /*ID句柄*/
-	const char *full_name;
+	const char *full_name; /*节点的名字*/
 	struct fwnode_handle fwnode;    /*fwnode的ops*/
 
-	struct	property *properties;
+	struct	property *properties;/*node的属性列表*/
 	struct	property *deadprops;	/* removed properties */
-	struct	device_node *parent;
-	struct	device_node *child;
-	struct	device_node *sibling;
+	struct	device_node *parent;/*父node*/
+	struct	device_node *child;/*子node*/
+	struct	device_node *sibling;/*兄弟node*/
 #if defined(CONFIG_OF_KOBJ)
 	struct	kobject kobj;
 #endif
@@ -352,14 +67,14 @@ struct fdt_property {
 };
 ```
 
-
+### TAG
 
 ```C
 #define FDT_BEGIN_NODE	0x1		/* Start node: full name */
 #define FDT_END_NODE	0x2		/* End node */
 #define FDT_PROP	    0x3		/* Property: name off,size,content */  
 #define FDT_NOP		    0x4		/* nop */
-#define FDT_END		    0x9
+#define FDT_END		    0x9     /*整个structure block的结束*/
 ```
 
 ### unflatten_device_tree
@@ -367,7 +82,7 @@ struct fdt_property {
 ```C
 /**
  * unflatten_device_tree - create tree of device_nodes from flat blob
- *
+ * 将flat的dtb转换成有依赖关系的设备树
  * unflattens the device-tree passed by the firmware, creating the
  * tree of struct device_node. It also fills the "name" and "type"
  * pointers of the nodes so the normal device-tree walking functions
@@ -390,7 +105,7 @@ void __init unflatten_device_tree(void)
 ```C
 /**
  * __unflatten_device_tree - create tree of device_nodes from flat blob
- *
+ * 根据dtb生成嵌套的device_nodes节点
  * unflattens a device-tree, creating the
  * tree of struct device_node. It also fills the "name" and "type"
  * pointers of the nodes so the normal device-tree walking functions
@@ -432,7 +147,10 @@ void *__unflatten_device_tree(const void *blob,
 	}
 
 	/* First pass, scan for size */
-    /*第一遍扫描，计算dtb的structure block数量和其名字长度大小，总共所需的内存空间*/
+    /*
+     * 第一遍扫描，计算dtb的structure block数量和其名字长度大小，总内存大小
+     * 由此可知，device_node后面紧接着node的字符串名字
+     */
 	size = unflatten_dt_nodes(blob, NULL, dad, NULL);
 	if (size < 0)
 		return NULL;
@@ -447,26 +165,26 @@ void *__unflatten_device_tree(const void *blob,
 	pr_debug("  size is %d, allocating...\n", size);
 
 	/* Allocate memory for the expanded device tree */
-    /*分配所需的内存，其中4应该是magic的大小，下面可推测*/
+    /*分配所需的内存，其中4是magic的大小，放在最后，其中需对齐的大小为struct device_node*/
 	mem = dt_alloc(size + 4, __alignof__(struct device_node));
 	if (!mem)
 		return NULL;
     
     /*清0*/
 	memset(mem, 0, size);
-    /*最后的4字节用作magic，进行了大小端的转换处理，并赋值*/
+    /*最后的4字节用作magic，进行大小端转换并保存*/
 	*(__be32 *)(mem + size) = cpu_to_be32(0xdeadbeef);
 
 	pr_debug("  unflattening %p...\n", mem);
 
 	/* Second pass, do actual unflattening */
-    /*传入已经申请的mem*/
+    /*传入已经申请的mem，进行设备树的展开*/
 	unflatten_dt_nodes(blob, mem, dad, mynodes);
-	if (be32_to_cpup(mem + size) != 0xdeadbeef)
+	if (be32_to_cpup(mem + size) != 0xdeadbeef)/*检查magic是否被写覆盖*/
 		pr_warn("End of tree marker overwritten: %08x\n",
 			be32_to_cpup(mem + size));
 
-	if (detached && mynodes) {
+	if (detached && mynodes) {/*传入了false，不进行追踪*/
 		of_node_set_flag(*mynodes, OF_DETACHED);
 		pr_debug("unflattened tree is detached\n");
 	}
@@ -498,7 +216,7 @@ static int unflatten_dt_nodes(const void *blob,
 {
 	struct device_node *root;
 	int offset = 0, depth = 0, initial_depth = 0;
-#define FDT_MAX_DEPTH	64 /*最深64个节点*/
+#define FDT_MAX_DEPTH	64 /*每个节点的子节点，最深64个*/
 	struct device_node *nps[FDT_MAX_DEPTH];
 	void *base = mem;
 	bool dryrun = !base;
@@ -521,7 +239,7 @@ static int unflatten_dt_nodes(const void *blob,
 
  
 	for (offset = 0;
-	     offset >= 0 && depth >= initial_depth;
+	     offset >= 0 && depth >= initial_depth;/*当遍历完所有node后，depth为0，退出循环*/
 	     offset = fdt_next_node(blob, offset, &depth)) {
 		if (WARN_ON_ONCE(depth >= FDT_MAX_DEPTH))
 			continue;
@@ -531,16 +249,18 @@ static int unflatten_dt_nodes(const void *blob,
 			continue;
         
         /*
-         * 计算每一个device_node+name的大小
+         * 计算每一个device_node+该node的名字长度
          * 如dryrun为0，则会对mem的device_node和name进行初始化
+         * 否则，只进行内存大小的统计
          */
 		if (!populate_node(blob, offset, &mem, nps[depth],
 				   &nps[depth+1], dryrun))
 			return mem - base;
 
         /*
-         * 此时of_root还没内容，则将初始化的第一个device_node
-         * 赋予给of_root
+         * 第二次，传入的nodepp为of_root
+         * 此时of_root为空，将初始化的第一个device_node
+         * 赋予给of_root作为起始节点
          */
 		if (!dryrun && nodepp && !*nodepp)
 			*nodepp = nps[depth+1];
@@ -557,7 +277,7 @@ static int unflatten_dt_nodes(const void *blob,
 	 * Reverse the child list. Some drivers assumes node order matches .dts
 	 * node order
 	 */
-	if (!dryrun)
+	if (!dryrun) /*反转链表，意义在哪*/
 		reverse_nodes(root);
 
 	return mem - base;
@@ -625,10 +345,10 @@ static bool populate_node(const void *blob,
 
 	populate_properties(blob, offset, mem, np, pathp, dryrun);
 	if (!dryrun) {
-        /*device_node上挂了很多property，找到'name'属性，作为device_node->name的内容*/
-		np->name = of_get_property(np, "name", NULL);/*找到*/
+        /*找到name属性内容，赋给property->name*/
+		np->name = of_get_property(np, "name", NULL);
 		if (!np->name)
-			np->name = "<NULL>"; /*找到了'name'属性，但是property->value为空*/
+			np->name = "<NULL>"; /*找不到name属性，property->name设置为<NULL>*/
 	}
 
 	*pnp = np;/*返回刚刚初始化完成的device_node*/
@@ -700,43 +420,53 @@ static void *unflatten_dt_alloc(void **mem, unsigned long size,
 ### fdt_next_node
 
 ```C
-/*获得当前 device-tree structure 节点之后的下一个 device-tree structure 节点*/
+/*获得下一个 structure block 的节点*/
 int fdt_next_node(const void *fdt, int offset, int *depth)
 {
 	int nextoffset = 0;
 	uint32_t tag;
-
+    
+    /*
+     * 不是FDT_BEGIN_NODE，直接返回，说明传入的offset不是node
+     */
 	if (offset >= 0)
 		if ((nextoffset = fdt_check_node_offset_(fdt, offset)) < 0)
-			return nextoffset; /*不是FDT_BEGIN_NODE，直接返回*/
+			return nextoffset; 
 
-	do {/*当node为FDT_BEGIN_NODE标签，进入此循环*/
+	do {
+        /*
+         * 当node的tag为FDT_BEGIN_NODE，此时已越过一个tag
+         */
 		offset = nextoffset;
 		tag = fdt_next_tag(fdt, offset, &nextoffset);/*获取下一个tag*/
 
 		switch (tag) {
-		case FDT_PROP:
+		case FDT_PROP:/*越过属性FDT_PROP和空FDT_NOP*/
 		case FDT_NOP:
 			break;
 
 		case FDT_BEGIN_NODE:
 			if (depth) 
-				(*depth)++;/*存在节点头，深度+1，循环结束，返回*/
+				(*depth)++;/*找到子节点的FDT_BEGIN_NODE，深度+1，循环结束，返回子节点*/
 			break;
 
-		case FDT_END_NODE: /*深度-1*/
+		case FDT_END_NODE: 
+            /*
+             * 深度-1，因为起始深度为0，如此时不为0，说明嵌套于子节点中，继续遍历寻找
+             * 否则说明，该root节点的子节点都已经遍历结束
+             */
 			if (depth && ((--(*depth)) < 0))
 				return nextoffset; 
 			break;
 
-		case FDT_END:
+		case FDT_END:/*整个structure block 结束*/
 			if ((nextoffset >= 0)
 			    || ((nextoffset == -FDT_ERR_TRUNCATED) && !depth))
 				return -FDT_ERR_NOTFOUND;
 			else
 				return nextoffset;
 		}
-	} while (tag != FDT_BEGIN_NODE);
+	} while (tag != FDT_BEGIN_NODE); /*当前node的下一个子node*/
 
 	return offset;
 }
@@ -973,7 +703,7 @@ static struct property *__of_find_property(const struct device_node *np,
 
 	if (!np)
 		return NULL;
-    /*利用链表遍历device_node的每个pp，找到同名*/
+    /*遍历device_node->properties链表的属性，找到同名*/
 	for (pp = np->properties; pp; pp = pp->next) {
 		if (of_prop_cmp(pp->name, name) == 0) {
 			if (lenp)
@@ -1016,13 +746,15 @@ static void populate_properties(const void *blob,
 	bool has_name = false;
 
 	pprev = &np->properties;
+               /*遍历获取node的属性*/
 	for (cur = fdt_first_property_offset(blob, offset);
 	     cur >= 0;
 	     cur = fdt_next_property_offset(blob, cur)) {
+               /*当到遍历完所有属性后，返回负值，则退出循环*/
 		const __be32 *val;
 		const char *pname;
 		u32 sz;
-
+        /*找到nameoff位置的字符串，并返回其长度*/
 		val = fdt_getprop_by_offset(blob, cur, &pname, &sz);
 		if (!val) {
 			pr_warn("Cannot locate property at 0x%x\n", cur);
@@ -1034,12 +766,12 @@ static void populate_properties(const void *blob,
 			continue;
 		}
 
-		if (!strcmp(pname, "name"))
+		if (!strcmp(pname, "name"))/*存在name属性*/
 			has_name = true;
-
+        /*累计mem，即统计device_node的所需同时，也统计property*/
 		pp = unflatten_dt_alloc(mem, sizeof(struct property),
 					__alignof__(struct property));
-		if (dryrun)
+		if (dryrun)/*只统计property所需内存大小，不进行处理*/
 			continue;
 
 		/* We accept flattened tree phandles either in
@@ -1048,7 +780,7 @@ static void populate_properties(const void *blob,
 		 * appear and have different values, things
 		 * will get weird. Don't do that.
 		 */
-		if (!strcmp(pname, "phandle") ||
+		if (!strcmp(pname, "phandle") || /*如果出现phandle属性，则会赋值给property->phandle*/
 		    !strcmp(pname, "linux,phandle")) {
 			if (!np->phandle)
 				np->phandle = be32_to_cpup(val);
@@ -1061,9 +793,9 @@ static void populate_properties(const void *blob,
 		if (!strcmp(pname, "ibm,phandle"))
 			np->phandle = be32_to_cpup(val);
 
-		pp->name   = (char *)pname;
-		pp->length = sz;
-		pp->value  = (__be32 *)val;
+		pp->name   = (char *)pname; /*记录属性名*/
+		pp->length = sz; /*属性内容长度*/
+		pp->value  = (__be32 *)val; /*属性内容*/
 		*pprev     = pp;
 		pprev      = &pp->next;
 	}
@@ -1071,7 +803,7 @@ static void populate_properties(const void *blob,
 	/* With version 0x10 we may not have the name property,
 	 * recreate it here from the unit name if absent
 	 */
-	if (!has_name) {
+	if (!has_name) { /*自行补全 phandle属性*/
 		const char *p = nodename, *ps = p, *pa = NULL;
 		int len;
 
@@ -1086,6 +818,7 @@ static void populate_properties(const void *blob,
 		if (pa < ps)
 			pa = p;
 		len = (pa - ps) + 1;
+        /*记录phandle属性所需大小*/
 		pp = unflatten_dt_alloc(mem, sizeof(struct property) + len,
 					__alignof__(struct property));
 		if (!dryrun) {
@@ -1112,10 +845,10 @@ static void populate_properties(const void *blob,
 int fdt_first_property_offset(const void *fdt, int nodeoffset)
 {
 	int offset;
-
+    /*先确认当前node是否符合FDT_BEGIN_NODE,不符合，返回错误码*/
 	if ((offset = fdt_check_node_offset_(fdt, nodeoffset)) < 0)
 		return offset;
-
+    /*符合，寻找其node的属性的FDT_PROP*/
 	return nextprop_(fdt, offset);
 }
 ```
@@ -1138,13 +871,121 @@ static int nextprop_(const void *fdt, int offset)
 			else
 				return nextoffset;
 
-		case FDT_PROP:
+		case FDT_PROP:/*找到属性的标签，返回其地址偏移*/
 			return offset;
 		}
 		offset = nextoffset;
-	} while (tag == FDT_NOP);
+	} while (tag == FDT_NOP);/*当找到FDT_NOP，跳过，继续往下找*/
 
 	return -FDT_ERR_NOTFOUND;
 }
 ```
+
+### fdt_next_property_offset
+
+```C
+int fdt_next_property_offset(const void *fdt, int offset)
+{
+	if ((offset = fdt_check_prop_offset_(fdt, offset)) < 0)
+		return offset;
+
+	return nextprop_(fdt, offset);
+}
+```
+
+### fdt_check_prop_offset_
+
+```C
+int fdt_check_prop_offset_(const void *fdt, int offset)
+{
+	if (!can_assume(VALID_INPUT)
+	    && ((offset < 0) || (offset % FDT_TAGSIZE)))
+		return -FDT_ERR_BADOFFSET;
+
+	if (fdt_next_tag(fdt, offset, &offset) != FDT_PROP)
+		return -FDT_ERR_BADOFFSET;
+
+	return offset;
+}
+```
+
+### fdt_getprop_by_offset
+
+```C
+const void *fdt_getprop_by_offset(const void *fdt, int offset,
+				  const char **namep, int *lenp)
+{
+	const struct fdt_property *prop;
+
+	prop = fdt_get_property_by_offset_(fdt, offset, lenp);
+	if (!prop)
+		return NULL;
+	if (namep) {
+		const char *name;
+		int namelen;
+
+		if (!can_assume(VALID_INPUT)) {
+			name = fdt_get_string(fdt, fdt32_ld(&prop->nameoff),
+					      &namelen);
+			if (!name) {
+				if (lenp)
+					*lenp = namelen;
+				return NULL;
+			}
+			*namep = name;
+		} else {
+			*namep = fdt_string(fdt, fdt32_ld(&prop->nameoff));
+		}
+	}
+
+	/* Handle realignment */
+	if (!can_assume(LATEST) && fdt_version(fdt) < 0x10 &&
+	    (offset + sizeof(*prop)) % 8 && fdt32_ld(&prop->len) >= 8)
+		return prop->data + 4; 
+	return prop->data;/*返回data[0],即内容*/
+}
+```
+
+### fdt_get_property_by_offset_
+
+```C
+static const struct fdt_property *fdt_get_property_by_offset_(const void *fdt,
+						              int offset,
+						              int *lenp)
+{
+	int err;
+	const struct fdt_property *prop;
+
+	if (!can_assume(VALID_INPUT) &&
+	    (err = fdt_check_prop_offset_(fdt, offset)) < 0) {
+		if (lenp)
+			*lenp = err;
+		return NULL;
+	}
+
+	prop = fdt_offset_ptr_(fdt, offset);
+
+	if (lenp)
+		*lenp = fdt32_ld(&prop->len);/*反回其内容的长度*/
+
+	return prop;/*检查无误后，返回fdt_property结构体的首地址*/
+}
+```
+
+
+
+## 总结
+
+****
+
+1. 将dtb进行展开成device_node，在structure block开始寻找
+2. 根据FDT_BEGIN_NODE来寻找有多少节点，统计需要生成的struct device_node数量
+3. 根据节点的名字（字符串大小）来统计所需的字节长度
+4. 根据每个节点内的FDT_PROP，统计需要生成的struct property数量
+5. 统计自动生成的phandle属性的名字和内容大小
+6. 还有4字节大小的magic数，在内存的最后位置。
+7. 统计的总需内存大小，生成一大块内存。
+8. 重新遍历一次，根据申请的内存，把所有的node和其property指向它，并进行初始化，并对node的父子兄弟关系进行关联
+9. 留意，node会创建long_name的字符串内存，property的name，val并不会新创建，而是直接指向dtb对应的位置。
+10. 填充magic
 
