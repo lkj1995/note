@@ -283,8 +283,6 @@ int device_create_file(struct device *dev,
 }
 ```
 
-
-
 ### device_register
 
 ```C
@@ -406,8 +404,6 @@ int __init devices_init(void)
 }
 ```
 
-
-
 ### device_add
 
 ```C
@@ -512,11 +508,11 @@ int device_add(struct device *dev)
 	error = device_create_file(dev, &dev_attr_uevent);
 	if (error)
 		goto attrError;
-    /*待定，还没看懂*/
+    /*添加链接文件，/sys/class/中的文件指向/sys/devices/*/
 	error = device_add_class_symlinks(dev);
 	if (error)
 		goto SymlinkError;
-	error = device_add_attrs(dev);/*添加dev->g'r*/
+	error = device_add_attrs(dev);/*添加dev->gttr*/
 	if (error)
 		goto AttrsError;
 	error = bus_add_device(dev);/*主要处理逻辑，添加device*/
@@ -546,7 +542,7 @@ int device_add(struct device *dev)
 		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 					     BUS_NOTIFY_ADD_DEVICE, dev);
 
-	kobject_uevent(&dev->kobj, KOBJ_ADD);
+	kobject_uevent(&dev->kobj, KOBJ_ADD); /*通知client，添加了新的kobj*/
 
 	/*
 	 * Check if any of the other devices (consumers) have been waiting for
@@ -565,7 +561,7 @@ int device_add(struct device *dev)
 		fw_devlink_link_device(dev);
 	}
 
-	bus_probe_device(dev);
+	bus_probe_device(dev);/*根据device查找合适的driver*/
 	if (parent)
 		klist_add_tail(&dev->p->knode_parent,
 			       &parent->p->klist_children);
@@ -635,7 +631,7 @@ static int device_private_init(struct device *dev)
 
 ### dev_set_name
 
-```
+```C
 /**
  * dev_set_name - set a device name
  * @dev: device
@@ -716,14 +712,6 @@ static struct kobject *get_device_parent(struct device *dev,
 	return NULL;
 }
 ```
-
-
-
-
-
-
-
-
 
 ### bus_add_device
 
@@ -842,3 +830,144 @@ out_devnode:
 }
 ```
 
+### bus_probe_device
+
+```C
+/**
+ * bus_probe_device - probe drivers for a new device
+ * @dev: device to probe
+ *
+ * - Automatically probe for a driver if the bus allows it.
+ */
+void bus_probe_device(struct device *dev)
+{
+	struct bus_type *bus = dev->bus;
+	struct subsys_interface *sif;
+
+	if (!bus)
+		return;
+
+	if (bus->p->drivers_autoprobe)
+		device_initial_probe(dev);
+
+	mutex_lock(&bus->p->mutex);
+	list_for_each_entry(sif, &bus->p->interfaces, node)
+		if (sif->add_dev)
+			sif->add_dev(dev, sif);
+	mutex_unlock(&bus->p->mutex);
+}
+```
+
+### device_initial_probe
+
+```C
+void device_initial_probe(struct device *dev)
+{
+	__device_attach(dev, true);
+}
+```
+
+### __device_attach
+
+```C
+static int __device_attach(struct device *dev, bool allow_async)
+{
+	int ret = 0;
+
+	device_lock(dev);
+	if (dev->p->dead) {
+		goto out_unlock;
+	} else if (dev->driver) {
+		if (device_is_bound(dev)) {
+			ret = 1;
+			goto out_unlock;
+		}
+		ret = device_bind_driver(dev);
+		if (ret == 0)
+			ret = 1;
+		else {
+			dev->driver = NULL;
+			ret = 0;
+		}
+	} else {
+		struct device_attach_data data = {
+			.dev = dev,
+			.check_async = allow_async,
+			.want_async = false,
+		};
+
+		if (dev->parent)
+			pm_runtime_get_sync(dev->parent);
+
+		ret = bus_for_each_drv(dev->bus, NULL, &data,
+					__device_attach_driver);
+		if (!ret && allow_async && data.have_async) {
+			/*
+			 * If we could not find appropriate driver
+			 * synchronously and we are allowed to do
+			 * async probes and there are drivers that
+			 * want to probe asynchronously, we'll
+			 * try them.
+			 */
+			dev_dbg(dev, "scheduling asynchronous probe\n");
+			get_device(dev);
+			async_schedule_dev(__device_attach_async_helper, dev);
+		} else {
+			pm_request_idle(dev);
+		}
+
+		if (dev->parent)
+			pm_runtime_put(dev->parent);
+	}
+out_unlock:
+	device_unlock(dev);
+	return ret;
+}
+```
+
+### bus_for_each_drv
+
+```C
+/**
+ * bus_for_each_drv - driver iterator
+ * @bus: bus we're dealing with.
+ * @start: driver to start iterating on.
+ * @data: data to pass to the callback.
+ * @fn: function to call for each driver.
+ *
+ * This is nearly identical to the device iterator above.
+ * We iterate over each driver that belongs to @bus, and call
+ * @fn for each. If @fn returns anything but 0, we break out
+ * and return it. If @start is not NULL, we use it as the head
+ * of the list.
+ *
+ * NOTE: we don't return the driver that returns a non-zero
+ * value, nor do we leave the reference count incremented for that
+ * driver. If the caller needs to know that info, it must set it
+ * in the callback. It must also be sure to increment the refcount
+ * so it doesn't disappear before returning to the caller.
+ */
+int bus_for_each_drv(struct bus_type *bus, struct device_driver *start,
+		     void *data, int (*fn)(struct device_driver *, void *))
+{
+	struct klist_iter i;
+	struct device_driver *drv;
+	int error = 0;
+
+	if (!bus)
+		return -EINVAL;
+
+	klist_iter_init_node(&bus->p->klist_drivers, &i,
+			     start ? &start->p->knode_bus : NULL);
+	while ((drv = next_driver(&i)) && !error)
+		error = fn(drv, data);
+	klist_iter_exit(&i);
+	return error;
+}
+```
+
+
+
+## 总结
+
+1. 

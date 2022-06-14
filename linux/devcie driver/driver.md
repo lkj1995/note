@@ -117,8 +117,9 @@ int driver_register(struct device_driver *drv)
 		pr_warn("Driver '%s' needs updating - please use "
 			"bus_type methods\n", drv->name);
 
+    /*查询bus中是否存在同名的driver*/
 	other = driver_find(drv->name, drv->bus);
-	if (other) { /*存在同名的driver，已被注册*/
+	if (other) { /*存在同名，已被注册*/
 		pr_err("Error: Driver '%s' is already registered, "
 			"aborting...\n", drv->name);
 		return -EBUSY;
@@ -205,7 +206,7 @@ int bus_add_driver(struct device_driver *drv)
 				     "%s", drv->name); 
 	if (error)
 		goto out_unregister;
-    /*list挂载，方便遍历寻找*/
+    /*把driver挂载到bus_klist_drivers下*/
 	klist_add_tail(&priv->knode_bus, &bus->p->klist_drivers);
 	if (drv->bus->p->drivers_autoprobe) {
 		error = driver_attach(drv);
@@ -256,6 +257,7 @@ out_put_bus:
 ```C
 /**
  * driver_attach - try to bind driver to devices.
+ * 尝试绑定设备和驱动
  * @drv: driver.
  *
  * Walk the list of devices that the bus has on it and try to
@@ -310,5 +312,346 @@ int bus_for_each_dev(struct bus_type *bus, struct device *start,
 }
 ```
 
+### __driver_attach
 
+```C
+static int __driver_attach(struct device *dev, void *data)
+{
+	struct device_driver *drv = data;
+	int ret;
+
+	/*
+	 * Lock device and try to bind to it. We drop the error
+	 * here and always return 0, because we need to keep trying
+	 * to bind to devices and some drivers will return an error
+	 * simply if it didn't support the device.
+	 *
+	 * driver_probe_device() will spit a warning if there
+	 * is an error.
+	 */
+
+	ret = driver_match_device(drv, dev);
+	if (ret == 0) { /*匹配失败*/
+		/* no match */
+		return 0;
+	} else if (ret == -EPROBE_DEFER) {
+		dev_dbg(dev, "Device match requests probe deferral\n");
+		driver_deferred_probe_add(dev);
+	} else if (ret < 0) {
+		dev_dbg(dev, "Bus failed to match device: %d\n", ret);
+		return ret;
+	} /* ret > 0 means positive match */
+
+	if (driver_allows_async_probing(drv)) {
+		/*
+		 * Instead of probing the device synchronously we will
+		 * probe it asynchronously to allow for more parallelism.
+		 *
+		 * We only take the device lock here in order to guarantee
+		 * that the dev->driver and async_driver fields are protected
+		 */
+		dev_dbg(dev, "probing driver %s asynchronously\n", drv->name);
+		device_lock(dev);
+		if (!dev->driver) {
+			get_device(dev);
+			dev->p->async_driver = drv;
+			async_schedule_dev(__driver_attach_async_helper, dev);
+		}
+		device_unlock(dev);
+		return 0;
+	}
+
+	device_driver_attach(drv, dev);/*调用driver->probe进行绑定*/
+
+	return 0;
+}
+```
+
+### driver_match_device
+
+```C
+static inline int driver_match_device(struct device_driver *drv,
+                                      struct device *dev)
+{
+        /*执行match进行匹配*/
+        return drv->bus->match ? drv->bus->match(dev, drv) : 1;
+}
+```
+
+### device_driver_attach
+
+```C
+/**
+ * device_driver_attach - attach a specific driver to a specific device
+ * driver和device绑定操作
+ * @drv: Driver to attach
+ * @dev: Device to attach it to
+ *
+ * Manually attach driver to a device. Will acquire both @dev lock and
+ * @dev->parent lock if needed.
+ */
+int device_driver_attach(struct device_driver *drv, struct device *dev)
+{
+	int ret = 0;
+
+	__device_driver_lock(dev, dev->parent);
+
+	/*
+	 * If device has been removed or someone has already successfully
+	 * bound a driver before us just skip the driver probe call.
+	 */
+	if (!dev->p->dead && !dev->driver)/*device被移除或已经绑定过了，就不进行绑定操作*/
+		ret = driver_probe_device(drv, dev);
+
+	__device_driver_unlock(dev, dev->parent);
+
+	return ret;
+}
+```
+
+### driver_probe_device
+
+```C
+
+/**
+ * driver_probe_device - attempt to bind device & driver together
+ * @drv: driver to bind a device to
+ * @dev: device to try to bind to the driver
+ *
+ * This function returns -ENODEV if the device is not registered,
+ * 1 if the device is bound successfully and 0 otherwise.
+ *
+ * This function must be called with @dev lock held.  When called for a
+ * USB interface, @dev->parent lock must be held as well.
+ *
+ * If the device has a parent, runtime-resume the parent before driver probing.
+ */
+int driver_probe_device(struct device_driver *drv, struct device *dev)
+{
+	int ret = 0;
+
+	if (!device_is_registered(dev))/*检查是否device已注册*/
+		return -ENODEV;
+
+	pr_debug("bus: '%s': %s: matched device %s with driver %s\n",
+		 drv->bus->name, __func__, dev_name(dev), drv->name);
+
+	pm_runtime_get_suppliers(dev);
+	if (dev->parent)
+		pm_runtime_get_sync(dev->parent);
+
+	pm_runtime_barrier(dev);
+	if (initcall_debug)
+		ret = really_probe_debug(dev, drv);
+	else
+		ret = really_probe(dev, drv); /*绑定操作，执行probe函数*/
+	pm_request_idle(dev);
+
+	if (dev->parent)
+		pm_runtime_put(dev->parent);
+
+	pm_runtime_put_suppliers(dev);
+	return ret;
+}
+```
+
+### really_probe
+
+```C
+static int really_probe(struct device *dev, struct device_driver *drv)
+{
+	int ret = -EPROBE_DEFER;
+	int local_trigger_count = atomic_read(&deferred_trigger_count);
+	bool test_remove = IS_ENABLED(CONFIG_DEBUG_TEST_DRIVER_REMOVE) &&
+			   !drv->suppress_bind_attrs;
+
+	if (defer_all_probes) {
+		/*
+		 * Value of defer_all_probes can be set only by
+		 * device_block_probing() which, in turn, will call
+		 * wait_for_device_probe() right after that to avoid any races.
+		 */
+		dev_dbg(dev, "Driver %s force probe deferral\n", drv->name);
+		driver_deferred_probe_add(dev);
+		return ret;
+	}
+
+	ret = device_links_check_suppliers(dev);
+	if (ret == -EPROBE_DEFER)
+		driver_deferred_probe_add_trigger(dev, local_trigger_count);
+	if (ret)
+		return ret;
+
+	atomic_inc(&probe_count);
+	pr_debug("bus: '%s': %s: probing driver %s with device %s\n",
+		 drv->bus->name, __func__, drv->name, dev_name(dev));
+	if (!list_empty(&dev->devres_head)) {
+		dev_crit(dev, "Resources present before probing\n");
+		ret = -EBUSY;
+		goto done;
+	}
+
+re_probe:
+	dev->driver = drv;
+
+	/* If using pinctrl, bind pins now before probing */
+	ret = pinctrl_bind_pins(dev);
+	if (ret)
+		goto pinctrl_bind_failed;
+
+	if (dev->bus->dma_configure) {
+		ret = dev->bus->dma_configure(dev);
+		if (ret)
+			goto probe_failed;
+	}
+
+	if (driver_sysfs_add(dev)) {
+		pr_err("%s: driver_sysfs_add(%s) failed\n",
+		       __func__, dev_name(dev));
+		goto probe_failed;
+	}
+
+	if (dev->pm_domain && dev->pm_domain->activate) {
+		ret = dev->pm_domain->activate(dev);
+		if (ret)
+			goto probe_failed;
+	}
+
+	if (dev->bus->probe) {/*二选一，优先bus_probe*/
+		ret = dev->bus->probe(dev);
+		if (ret)
+			goto probe_failed;
+	} else if (drv->probe) {
+		ret = drv->probe(dev); /*platform_drv_probe*/
+		if (ret)
+			goto probe_failed;
+	}
+
+	if (device_add_groups(dev, drv->dev_groups)) {
+		dev_err(dev, "device_add_groups() failed\n");
+		goto dev_groups_failed;
+	}
+
+	if (dev_has_sync_state(dev) &&
+	    device_create_file(dev, &dev_attr_state_synced)) {
+		dev_err(dev, "state_synced sysfs add failed\n");
+		goto dev_sysfs_state_synced_failed;
+	}
+
+	if (test_remove) {
+		test_remove = false;
+
+		device_remove_file(dev, &dev_attr_state_synced);
+		device_remove_groups(dev, drv->dev_groups);
+
+		if (dev->bus->remove)
+			dev->bus->remove(dev);
+		else if (drv->remove)
+			drv->remove(dev);
+
+		devres_release_all(dev);
+		driver_sysfs_remove(dev);
+		dev->driver = NULL;
+		dev_set_drvdata(dev, NULL);
+		if (dev->pm_domain && dev->pm_domain->dismiss)
+			dev->pm_domain->dismiss(dev);
+		pm_runtime_reinit(dev);
+
+		goto re_probe;
+	}
+
+	pinctrl_init_done(dev);
+
+	if (dev->pm_domain && dev->pm_domain->sync)
+		dev->pm_domain->sync(dev);
+
+	driver_bound(dev);
+	ret = 1;
+	pr_debug("bus: '%s': %s: bound device %s to driver %s\n",
+		 drv->bus->name, __func__, dev_name(dev), drv->name);
+	goto done;
+
+dev_sysfs_state_synced_failed:
+	device_remove_groups(dev, drv->dev_groups);
+dev_groups_failed:
+	if (dev->bus->remove)
+		dev->bus->remove(dev);
+	else if (drv->remove)
+		drv->remove(dev);
+probe_failed:
+	if (dev->bus)
+		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
+					     BUS_NOTIFY_DRIVER_NOT_BOUND, dev);
+pinctrl_bind_failed:
+	device_links_no_driver(dev);
+	devres_release_all(dev);
+	arch_teardown_dma_ops(dev);
+	driver_sysfs_remove(dev);
+	dev->driver = NULL;
+	dev_set_drvdata(dev, NULL);
+	if (dev->pm_domain && dev->pm_domain->dismiss)
+		dev->pm_domain->dismiss(dev);
+	pm_runtime_reinit(dev);
+	dev_pm_set_driver_flags(dev, 0);
+
+	switch (ret) {
+	case -EPROBE_DEFER:
+		/* Driver requested deferred probing */
+		dev_dbg(dev, "Driver %s requests probe deferral\n", drv->name);
+		driver_deferred_probe_add_trigger(dev, local_trigger_count);
+		break;
+	case -ENODEV:
+	case -ENXIO:
+		pr_debug("%s: probe of %s rejects match %d\n",
+			 drv->name, dev_name(dev), ret);
+		break;
+	default:
+		/* driver matched but the probe failed */
+		pr_warn("%s: probe of %s failed with error %d\n",
+			drv->name, dev_name(dev), ret);
+	}
+	/*
+	 * Ignore errors returned by ->probe so that the next driver can try
+	 * its luck.
+	 */
+	ret = 0;
+done:
+	atomic_dec(&probe_count);
+	wake_up_all(&probe_waitqueue);
+	return ret;
+}
+```
+
+### platform_drv_probe
+
+```C
+static int platform_drv_probe(struct device *_dev)
+{
+	struct platform_driver *drv = to_platform_driver(_dev->driver);
+	struct platform_device *dev = to_platform_device(_dev);
+	int ret;
+
+	ret = of_clk_set_defaults(_dev->of_node, false);
+	if (ret < 0)
+		return ret;
+
+	ret = dev_pm_domain_attach(_dev, true);
+	if (ret)
+		goto out;
+
+	if (drv->probe) {
+		ret = drv->probe(dev);
+		if (ret)
+			dev_pm_domain_detach(_dev, true);
+	}
+
+out:
+	if (drv->prevent_deferred_probe && ret == -EPROBE_DEFER) {
+		dev_warn(_dev, "probe deferral not supported\n");
+		ret = -ENXIO;
+	}
+
+	return ret;
+}
+```
 
