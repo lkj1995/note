@@ -68,17 +68,15 @@ pincontroller{
 struct pinctrl_desc {
 	const char *name;
     
-    /*引脚的枚举与命名，pins指向一个数组，npins描述该数组的大小*/
+    /*指向一个数组，记录引脚的枚举号与名字*/
 	const struct pinctrl_pin_desc *pins;
+    
+    /*描述该数组的大小*/
 	unsigned int npins;
     
-    /*用于获取pin group的相关内容，如group的数量，某个group的pin描述，数量等*/
+    /*要先提取info，再解析设备树后，调用这些ops就可以根据state配置引脚*/
 	const struct pinctrl_ops *pctlops;
-    
-    /*选择并使能对应的funciton的复用，如pinctrl-0的复用iic*/
 	const struct pinmux_ops *pmxops;
-    
-    /*配置某个pin或某group pin，如上下拉*/
 	const struct pinconf_ops *confops;
     
 	struct module *owner;
@@ -368,3 +366,5 @@ struct pinctrl_map_configs {
 	unsigned num_configs;
 };
 ```
+
+- function：iomuxc下的子节点都是为function，但是在imx6ull中，“imx6ul_evk“节点为function（其实理解为该单个board使用到的外设group节点），“imx6ul_evk“节点下有很多个外设group节点，每个group下有很多个pin

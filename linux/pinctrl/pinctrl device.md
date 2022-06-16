@@ -15,13 +15,13 @@ device {
 
 ### 转换过程
 
-```
+```c
 dt的<&state_0_node_a> -> pinctrl_map -> pinctrl_setting
 
 将 pinctrl_setting 存入 pinctrl_state.setting
 ```
 
-### device
+### struct device
 
 ```c
 struct device {
@@ -33,7 +33,7 @@ struct device {
 };
 ```
 
-### dev_pin_info
+### struct dev_pin_info
 
 ```C
 /**
@@ -60,7 +60,7 @@ struct dev_pin_info {
 };
 ```
 
-### pinctrl
+### srtuct pinctrl
 
 ```C
 /**
@@ -86,7 +86,7 @@ struct pinctrl {
 };
 ```
 
-### pinctrl_state
+### struct pinctrl_state
 
 ```C
 /**
@@ -103,7 +103,7 @@ struct pinctrl_state {
 
 ```
 
-### pinctrl_setting
+### struct pinctrl_setting
 
 ```C
 /**

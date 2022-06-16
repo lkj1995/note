@@ -6,9 +6,9 @@
 #  762                 compatible = "fsl,imx6ul-iomuxc";
 ```
 
-可知存在属性为 fsl,imx6ul-iomuxc，可与drv匹配成功。
+可知存在属性为 fsl,imx6ul-iomuxc，可与drv匹配成功,此过程为构造及初始化pinctrl，因为该节点iomuxc并不是真正的硬件，它的工作是为后续真正的dev和drv匹配提前做准备。
 
-### imx6ul_pinctrl_driver
+### struct imx6ul_pinctrl_driver
 
 ```c
 /*厂商预先写好，该芯片的pin*/
@@ -46,13 +46,16 @@ static struct platform_driver imx6ul_pinctrl_driver = {
 };
 ```
 
-### imx6ul_pinctrl_probe
+### 1 imx6ul_pinctrl_probe()
 
 ```C
 static int imx6ul_pinctrl_probe(struct platform_device *pdev)
 {
 	const struct imx_pinctrl_soc_info *pinctrl_info;
-	/*找到最匹配的compatible，获取其私有数据，即获取 imx_pinctrl_soc_info */
+	/*
+	 * 其实在match已经进行过匹配了，这一步是为了获取 imx6ul_pinctrl_info 
+	 * 里面存有了该soc的全部pin的信息（数量，引脚名字）
+	 */
 	pinctrl_info = of_device_get_match_data(&pdev->dev);
 	if (!pinctrl_info)
 		return -ENODEV;
@@ -61,13 +64,13 @@ static int imx6ul_pinctrl_probe(struct platform_device *pdev)
 }
 ```
 
-### of_device_get_match_data
+### 1-1 of_device_get_match_data()
 
 ```C
 const void *of_device_get_match_data(const struct device *dev)
 {
 	const struct of_device_id *match;
-    /**/
+    /*获取 imx6ul_pinctrl_info */
 	match = of_match_device(dev->driver->of_match_table, dev);
 	if (!match)
 		return NULL;
@@ -76,7 +79,7 @@ const void *of_device_get_match_data(const struct device *dev)
 }
 ```
 
-### of_match_device
+### 1-1-1 of_match_device()
 
 ```C
 /*
@@ -106,28 +109,38 @@ const struct of_device_id *of_match_device(const struct of_device_id *matches,
 }
 ```
 
+### struct pinctrl_desc
+
 ```C
 struct pinctrl_desc {
 	const char *name;
     
-    /*引脚的枚举与命名，pins指向一个数组，npins描述该数组的大小*/
+    /*指向一个数组，记录引脚的枚举号与名字*/
 	const struct pinctrl_pin_desc *pins;
+    
+    /*描述该数组的大小*/
 	unsigned int npins;
     
-    /*用于获取pin group的相关内容，如group的数量，某个group的pin描述，数量等*/
+    /*要先提取info，再解析设备树后，调用这些ops就可以根据state配置引脚*/
 	const struct pinctrl_ops *pctlops;
-    
-    /*选择并使能对应的funciton的复用，如pinctrl-0的复用iic*/
 	const struct pinmux_ops *pmxops;
-    
-    /*配置某个pin或某group pin，如上下拉*/
 	const struct pinconf_ops *confops;
     
 	...
 };
 ```
 
-### imx_pinctrl_soc_info
+### struct  pinctrl_pin_desc
+
+```C
+struct pinctrl_pin_desc {
+        unsigned number; /*厂商定义的pin号*/
+        const char *name;/*该pin对应的名字*/
+        void *drv_data;
+};
+```
+
+### struct imx_pinctrl_soc_info
 
 ```C
 struct imx_pinctrl_soc_info {
@@ -137,23 +150,23 @@ struct imx_pinctrl_soc_info {
      */
 	struct device *dev;
     
-    /*初始默认已写好，所有pin配置值，及数量*/
+    /*指向一个数组，记录引脚的枚举号与名字*/
 	const struct pinctrl_pin_desc *pins;
+    /*pin总数量*/
 	unsigned int npins;
     
 	struct imx_pin_reg *pin_regs;
     
-    /*group数组，描述该节点下，每个group的名字，pin数量，及每个pin的具体配置值*/
+    /*指向一个数组，描述group的名字，pin数量，及每个pin的具体配置值*/
 	struct imx_pin_group *groups;
     /*group的数量*/
 	unsigned int ngroups; 
     
 	unsigned int group_index;
     
-    /*记录了iomuxc下有多少个group及每个group的名字，对应 imx_pin_group*/
-	struct imx_pmx_func *functions; 
-    
-    /*等于1*/
+    /*指向一个数组，记录了该func下的必要信息，func名字，group的名字，数量，用于cat */
+	struct imx_pmx_func *functions;    
+    /*等func的数量，等于1*/
 	unsigned int nfunctions;
     
 	unsigned int flags;
@@ -161,7 +174,7 @@ struct imx_pinctrl_soc_info {
 };
 ```
 
-### imx_pin_reg
+### struct imx_pin_reg
 
 ```C
 /**
@@ -175,24 +188,7 @@ struct imx_pin_reg {
 };
 ```
 
-### pinctrl_pin_desc
-
-```C
-/**
- * struct pinctrl_pin_desc - boards/machines provide information on their
- * pins, pads or other muxable units in this struct
- * @number: unique pin number from the global pin number space
- * @name: a name for this pin
- * @drv_data: driver-defined per-pin data. pinctrl core does not touch this
- */
-struct pinctrl_pin_desc {
-	unsigned number;
-	const char *name;
-	void *drv_data;
-};
-```
-
-### imx_pinctrl
+### struct imx_pinctrl
 
 ```C
 /**
@@ -208,7 +204,7 @@ struct imx_pinctrl {
 };
 ```
 
-### imx_pmx_func
+### struct imx_pmx_func
 
 ```C
 /**
@@ -218,13 +214,33 @@ struct imx_pinctrl {
  * @num_groups: the number of groups
  */
 struct imx_pmx_func {
-	const char *name;
-	const char **groups;
-	unsigned num_groups;
+	const char *name; /*imx6ul_evk，只有一个func*/
+	const char **groups; /*用数组记录所有组的名字，我估计是用于cat 显示*/
+	unsigned num_groups;/*func下，组的数量*/
 };
 ```
 
-### imx_pin_group
+### struct imx_pin_group
+
+```C
+/**
+ * struct imx_pin_group - describes an IMX pin group
+ * @name: the name of this specific pin group
+ * @npins: the number of pins in this group array, i.e. the number of
+ *	elements in .pins so we can iterate over that array
+ * @pin_ids: array of pin_ids. pinctrl forces us to maintain such an array
+ * @pins: array of pins
+ */
+struct imx_pin_group {
+	const char *name;/*该组的名字*/
+	unsigned npins;/*该组的pin数量*/
+	unsigned int *pin_ids;
+	struct imx_pin *pins;/*每个pin的具体配置值，offset，mux，config*/
+};
+
+```
+
+### struct imx_pin
 
 ```C
 /**
@@ -243,25 +259,9 @@ struct imx_pin {
 	unsigned int input_val;
 	unsigned long config;
 };
-
-/**
- * struct imx_pin_group - describes an IMX pin group
- * @name: the name of this specific pin group
- * @npins: the number of pins in this group array, i.e. the number of
- *	elements in .pins so we can iterate over that array
- * @pin_ids: array of pin_ids. pinctrl forces us to maintain such an array
- * @pins: array of pins
- */
-struct imx_pin_group {
-	const char *name;/*该组的名字*/
-	unsigned npins;/*该组的pin数量*/
-	unsigned int *pin_ids;
-	struct imx_pin *pins;/*每个pin的具体配置值，offset，mux，config*/
-};
-
 ```
 
-### pinctrl_dev
+### struct pinctrl_dev
 
 ```C
 /**
@@ -301,9 +301,15 @@ struct pinctrl_dev {
 };
 ```
 
-### imx_pinctrl_probe
+### 1-2 imx_pinctrl_probe()
 
 ```C
+/*
+ * 利用厂商写死的imx_pinctrl_soc_info，先生成pinctrl_desc
+ * 再把dt解析，补充初始化imx_pinctrl_soc_info剩余的成员
+ * 这样的好处是，厂商只定义了引脚，至于怎么用引脚的功能，就可以自行写dt
+ * 效果就是，开机运行的过程，去解析dt，动态生成所需的外设功能
+ */
 int imx_pinctrl_probe(struct platform_device *pdev,
 		      struct imx_pinctrl_soc_info *info)
 {
@@ -320,7 +326,8 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 		dev_err(&pdev->dev, "wrong pinctrl info\n");
 		return -EINVAL;
 	}
-	info->dev = &pdev->dev; /*记录dev*/
+    /*记录device*/
+	info->dev = &pdev->dev; 
 
 	if (info->gpr_compatible) {
 		gpr = syscon_regmap_lookup_by_compatible(info->gpr_compatible);
@@ -334,7 +341,10 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 	if (!ipctl)
 		return -ENOMEM;
 
-    /*申请 imx_pin_reg * npins 内存， 记录寄存器偏移值*/
+    /*
+     * 申请 imx_pin_reg * npins 内存
+     * 我猜测这个用于保存每个引脚的mux和conf的基地址
+     */
 	info->pin_regs = devm_kmalloc(&pdev->dev, sizeof(*info->pin_regs) *
 				      info->npins, GFP_KERNEL);
 	if (!info->pin_regs)
@@ -353,7 +363,7 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 	if (IS_ERR(ipctl->base))
 		return PTR_ERR(ipctl->base);
 
-    /*寻找属性 "fsl,input-sel",false跳过*/
+    /*寻找属性 "fsl,input-sel",返回false，跳过*/
 	if (of_property_read_bool(dev_np, "fsl,input-sel")) {
 		np = of_parse_phandle(dev_np, "fsl,input-sel", 0);
 		if (!np) {
@@ -376,11 +386,14 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 	if (!imx_pinctrl_desc)
 		return -ENOMEM;
 
+    /*pinctrl_desc的名字和dev的一致*/
 	imx_pinctrl_desc->name = dev_name(&pdev->dev);
     
-    /*imx6ul_pinctrl_info，芯片的所有引脚枚举*/
+    /*
+     * pins： 芯片引脚的pin号，名字
+     * npins：pin数量
+     */
 	imx_pinctrl_desc->pins = info->pins;
-    /*pin的总数量*/
 	imx_pinctrl_desc->npins = info->npins;
     
     /*厂商写好的ops*/
@@ -392,19 +405,29 @@ int imx_pinctrl_probe(struct platform_device *pdev,
     
 	imx_pinctrl_desc->owner = THIS_MODULE,
     
-	/*当前info只记录了基本内容，展开并记录在imx_pin_group和imx_pmx_func*/
+	/* 当前info只记录了pin号，名字，数量
+	 * 因此还需解析设备树的节点（设备树已经解析过了，只需获取device_node）
+	 * 然后存入pinctrl_desc的imx_pin_group（组的信息及组的pin信息）
+	 * 和imx_pmx_func（组的名字）
+	 */
 	ret = imx_pinctrl_probe_dt(pdev, info);
 	if (ret) {
 		dev_err(&pdev->dev, "fail to probe dt properties\n");
-		return ret;
+		return ret; 
 	}
-
-	ipctl->info = info;/*记录info*/
-	ipctl->dev = info->dev;/*记录dev*/
     
-     /* pdev->driver_data = ipctl; */
+    /* 
+     * platform_set_drvdata() --->  pdev->driver_data = ipctl; 
+     * 这时候，通过platform_device就能找到imx_pinctrl
+     * 再通过imx_pinctrl找到imx_pinctrl_soc_info
+     */
+	ipctl->info = info;
+	ipctl->dev = info->dev;
 	platform_set_drvdata(pdev, ipctl);
     
+    /*
+     * 注册并构造 pinctrl_dev
+     */
 	ipctl->pctl = devm_pinctrl_register(&pdev->dev,
 					    imx_pinctrl_desc, ipctl);
 	if (IS_ERR(ipctl->pctl)) {
@@ -418,9 +441,15 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 }
 ```
 
-### imx_pinctrl_probe_dt
+### 1-2-1 imx_pinctrl_probe_dt()
 
 ```C
+/*
+ * 由下分析可知，一次分配好func下group的数组，然后根据偏移值
+ * 再对每个group的pin一次分配数组，然后解析dt，并把内容填入group和pin的结构体
+ * 完成后，imx_pinctrl_soc_info就保存了所有配置信息，解析完毕。
+ * 下一步，则进行外设配置。
+ */
 static int imx_pinctrl_probe_dt(struct platform_device *pdev,
 				struct imx_pinctrl_soc_info *info)
 {
@@ -432,24 +461,28 @@ static int imx_pinctrl_probe_dt(struct platform_device *pdev,
 
 	if (!np)
 		return -ENODEV;
-
-	flat_funcs = imx_pinctrl_dt_is_flat_functions(np);/*此时根节点为iomuxc*/
+    
     /*
      * false：如果子节点不存在，孙节点存在"fsl,pins"
      * ture:子节点存在"fsl,pins"
      */
+	flat_funcs = imx_pinctrl_dt_is_flat_functions(np);
+
 	if (flat_funcs) {
 		nfuncs = 1;
 	} else {/*会进行此分支，false*/
-		nfuncs = of_get_child_count(np);/*遍历所有子节点，记录数量，等于1*/
+        
+        /*遍历iomuxc子节点，记录func数量，等于1*/
+		nfuncs = of_get_child_count(np);
 		if (nfuncs <= 0) {
 			dev_err(&pdev->dev, "no functions defined\n");
 			return -EINVAL;
 		}
 	}
-
-	info->nfunctions = nfuncs;/*应该理解为 board 更准确*/
-    /*申请 imx_pmx_func 内存，*/
+    
+    /*保存func相关信息在 imx_pinctrl_soc_info*/
+	info->nfunctions = nfuncs;
+    /*申请 imx_pmx_func 内存*/
 	info->functions = devm_kzalloc(&pdev->dev, nfuncs * sizeof(struct imx_pmx_func),
 					GFP_KERNEL);
 	if (!info->functions)
@@ -461,10 +494,11 @@ static int imx_pinctrl_probe_dt(struct platform_device *pdev,
 	} else {/*进入此分支*/
 		info->ngroups = 0;
 		for_each_child_of_node(np, child)
-			info->ngroups += of_get_child_count(child);/*子节点总数量*/
+            /*func下的group数量*/
+			info->ngroups += of_get_child_count(child);
 	}
     
-    /*分配 imx_pin_group * N 个组的内存*/
+    /*分配 imx_pin_group 数组，用于保存dt解析的func下的所有group信息*/
 	info->groups = devm_kzalloc(&pdev->dev, info->ngroups * sizeof(struct imx_pin_group),
 					GFP_KERNEL);
 	if (!info->groups)
@@ -473,7 +507,7 @@ static int imx_pinctrl_probe_dt(struct platform_device *pdev,
 	if (flat_funcs) {
 		imx_pinctrl_parse_functions(np, info, 0);
 	} else {/*进入此分支*/
-		for_each_child_of_node(np, child)
+		for_each_child_of_node(np, child)/*对iomux节点下的每个func，都进行解析*/
 			imx_pinctrl_parse_functions(child, info, i++);
 	}
 
@@ -481,9 +515,10 @@ static int imx_pinctrl_probe_dt(struct platform_device *pdev,
 }
 ```
 
-### imx_pinctrl_parse_functions
+### 1-2-1-1 imx_pinctrl_parse_functions()
 
 ```C
+/*解析单个func下的每个group*/
 static int imx_pinctrl_parse_functions(struct device_node *np,
 				       struct imx_pinctrl_soc_info *info,
 				       u32 index)
@@ -494,23 +529,27 @@ static int imx_pinctrl_parse_functions(struct device_node *np,
 	u32 i = 0;
 
 	dev_dbg(info->dev, "parse function(%d): %s\n", index, np->name);
-
+	
+    /*前一个函数申请的内存，会遍历每个func*/
 	func = &info->functions[index];
 
 	/* Initialise function */
-	func->name = np->name;/*名字为"iomuxc"*/
-	func->num_groups = of_get_child_count(np);/*获得子节点个数*/
+    /*func的名字，"imx6ul_evk"*/
+	func->name = np->name;
+    /*获得func下group个数*/
+	func->num_groups = of_get_child_count(np);
 	if (func->num_groups == 0) {
 		dev_err(info->dev, "no groups defined in %s\n", np->full_name);
 		return -EINVAL;
 	}
-    /*分配char* 数组，保存子节点group的名字*/
+    /*分配char*数组，保存所有group的名字*/
 	func->groups = devm_kzalloc(info->dev,
 			func->num_groups * sizeof(char *), GFP_KERNEL);
 
     
-	for_each_child_of_node(np, child) {
-        /* 记录每个group的名字在imx_pmx_func->group的char*指针中 */
+	for_each_child_of_node(np, child) { /*解析group下的每个in*/
+        
+        /* 在func "imx6ul_evk"，记录每个group的名字 */         
 		func->groups[i] = child->name; 
 		grp = &info->groups[info->group_index++];
 		imx_pinctrl_parse_groups(child, grp, info, i++);
@@ -520,12 +559,14 @@ static int imx_pinctrl_parse_functions(struct device_node *np,
 }
 ```
 
-### imx_pinctrl_parse_groups
+### 1-2-1-1-1 imx_pinctrl_parse_groups()
 
 ```C
+/*解析当前group下的pin，生成结构体保存fsl,pin的内容*/
 /*
  * Each pin represented in fsl,pins consists of 5 u32 PIN_FUNC_ID and
  * 1 u32 CONFIG, so 24 types in total for each pin.
+ * 5个PIN_FUNC_ID和1个CONFIG
  */
 #define FSL_PIN_SIZE 24
 #define SHARE_FSL_PIN_SIZE 20
@@ -543,21 +584,23 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 	dev_dbg(info->dev, "group(%d): %s\n", index, np->name);
 
     /* 
-     * FSL_PIN_SIZE为24字节，即使用6个4字节来描述一个pin
-     * 记录关于offset，mux，config信息
+     * FSL_PIN_SIZE = 24字节，即使用6个4字节来描述一个pin
+     * 记录了关于offset，mux，config信息
      */
 	if (info->flags & SHARE_MUX_CONF_REG)
 		pin_size = SHARE_FSL_PIN_SIZE;
 	else
 		pin_size = FSL_PIN_SIZE;
+    
 	/* Initialise group */
-	grp->name = np->name;/*记录子节点的group名字*/
+    /*解析device_node，等同group，只是用处不同*/
+	grp->name = np->name;
 
 	/*
 	 * the binding format is fsl,pins = <PIN_FUNC_ID CONFIG ...>,
 	 * do sanity check and calculate pins number
 	 */
-    /*寻找属性"fsl,pins"的内容，并记录长度*/
+    /*当该group存在"fsl,pins"，表示该group有pin需要解析，否则进行下一个group解析*/
 	list = of_get_property(np, "fsl,pins", &size);
 	if (!list) {
 		dev_err(info->dev, "no fsl,pins property in node %s\n", np->full_name);
@@ -565,26 +608,27 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 	}
 
 	/* we do not check return since it's safe node passed down */
-	if (!size || size % pin_size) {
+	if (!size || size % pin_size) {/*不等于24字节的倍数，不符合描述的长度*/
 		dev_err(info->dev, "Invalid fsl,pins property in node %s\n", np->full_name);
 		return -EINVAL;
 	}
     
-    /*有多少个4字节的十六进制数*/
+    /*记录该group有多少个pin需要描述*/
 	grp->npins = size / pin_size;
     
-    /*就要创建多少个imx_pin来记录该pin需要描述的内容*/
+    /*创建imx_pin数组，用于保存pin描述的内容*/
 	grp->pins = devm_kzalloc(info->dev, grp->npins * sizeof(struct imx_pin),
 				GFP_KERNEL);
     
-    /*ids*/
+    /*创建ids数组，这个不重要*/
 	grp->pin_ids = devm_kzalloc(info->dev, grp->npins * sizeof(unsigned int),
 				GFP_KERNEL);
     
 	if (!grp->pins || ! grp->pin_ids)
 		return -ENOMEM;
 
-	for (i = 0; i < grp->npins; i++) {
+	for (i = 0; i < grp->npins; i++) {/*遍历所有pin，每个pin偏移24字节*/
+        /*记录第1个__be32*/
 		u32 mux_reg = be32_to_cpu(*list++);
 		u32 conf_reg;
 		unsigned int pin_id;
@@ -597,6 +641,7 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 		if (info->flags & SHARE_MUX_CONF_REG) {
 			conf_reg = mux_reg;
 		} else {
+            /*记录第2个__be32*/
 			conf_reg = be32_to_cpu(*list++);
 			if (!conf_reg)
 				conf_reg = -1;
@@ -612,12 +657,12 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 		grp->pin_ids[i] = pin_id;
 		pin_reg->mux_reg = mux_reg;
 		pin_reg->conf_reg = conf_reg;
-		pin->input_reg = be32_to_cpu(*list++);
-		pin->mux_mode = be32_to_cpu(*list++);
-		pin->input_val = be32_to_cpu(*list++);
+		pin->input_reg = be32_to_cpu(*list++);/*记录第3个__be32*/
+		pin->mux_mode = be32_to_cpu(*list++);/*记录第4个__be32*/
+		pin->input_val = be32_to_cpu(*list++);/*记录第5个__be32*/
 
 		/* SION bit is in mux register */
-		config = be32_to_cpu(*list++);
+		config = be32_to_cpu(*list++);/*记录第6个__be32*/
 		if (config & IMX_PAD_SION)
 			pin->mux_mode |= IOMUXC_CONFIG_SION;
 		pin->config = config & ~IMX_PAD_SION;
@@ -630,9 +675,11 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 }
 ```
 
-### devm_pinctrl_register
+### 1-2-2 devm_pinctrl_register()
 
 ```C
+/*ipctl->pctl = devm_pinctrl_register(&pdev->dev,imx_pinctrl_desc, ipctl);*/
+
 /**
  * devm_pinctrl_register() - Resource managed version of pinctrl_register().
  * @dev: parent device for this pin controller
@@ -649,6 +696,7 @@ struct pinctrl_dev *devm_pinctrl_register(struct device *dev,
 					  void *driver_data)
 {
 	struct pinctrl_dev **ptr, *pctldev;
+
 
 	ptr = devres_alloc(devm_pinctrl_dev_release, sizeof(*ptr), GFP_KERNEL);
 	if (!ptr)
@@ -667,7 +715,7 @@ struct pinctrl_dev *devm_pinctrl_register(struct device *dev,
 }
 ```
 
-### pinctrl_register
+### 1-2-2-1 pinctrl_register()
 
 ```C
 /**
@@ -696,17 +744,29 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 
 	/* Initialize pin control device struct */
 	pctldev->owner = pctldesc->owner;
+        
+    /* 
+     * pinctrl_dev->desc = pincrtl_desc;
+     * 
+     */    
 	pctldev->desc = pctldesc;
     
-    /* pinctrl_dev->driver_data = pinctrl->desc; */
+    /* 
+     * pinctrl_dev->driver_data = imx_pinctrl; 
+     * 此时通过pinctrl_dev可找到imx_pinctrl_soc_info
+     */
 	pctldev->driver_data = driver_data; 
+    
+    /*初始化链表*/
 	INIT_RADIX_TREE(&pctldev->pin_desc_tree, GFP_KERNEL);
 	INIT_LIST_HEAD(&pctldev->gpio_ranges);
     
+    /*保存了iomuxc这个device*/
 	pctldev->dev = dev;
 	mutex_init(&pctldev->mutex);
 
 	/* check core ops for sanity */
+    /*检查pctldev->desc的 三个ops是否存在，防止未定义*/
 	ret = pinctrl_check_ops(pctldev);
 	if (ret) {
 		dev_err(dev, "pinctrl ops lacks necessary functions\n");
@@ -730,7 +790,11 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 	/* Register all the pins */
 	dev_dbg(dev, "try to register %d pins ...\n",  pctldesc->npins);
     
-    /*每个pin都申请一个pin_desc结构，并挂到pin_desc_tree*/
+    /*
+     * 注意，pinctrl_desc只是保存了pin号和名字，及ops
+     * 对于每个pin，利用厂商写死的pinctrl_pin_desc
+     * 申请一个pin_desc结构，并挂到pin_desc_tree进行管理
+     */
 	ret = pinctrl_register_pins(pctldev, pctldesc->pins, pctldesc->npins);
 	if (ret) {
 		dev_err(dev, "error during pin registration\n");
@@ -740,11 +804,23 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 	}
 
 	mutex_lock(&pinctrldev_list_mutex);
-    /*挂入全局pinctrldev_list进行管理*/
+    /*
+     * 挂入全局pinctrldev_list进行管理，用于查找
+     * 应该系统中只有一个pinctrl_dev
+     * 我觉得这个应该也会用于cat
+     */
 	list_add_tail(&pctldev->node, &pinctrldev_list);
 	mutex_unlock(&pinctrldev_list_mutex);
 
-    
+    /*
+     * 查找的方法：存在一个pinctrl_list全局变量
+     * 遍历pinctrl_list的pinctrl，如果该dev地址是一样的
+     * 则说明找到了pinctrl，并返回该结构地址。
+     * 
+     * 如果是iomuxc节点调用的probe，pinctrl此时应该还不存在
+     * 会生成一个新的pinctrl，然后保存在pinctrl_dev中
+     * 此时就可以利用pinctrl_dev找pinctrl了
+     */
 	pctldev->p = pinctrl_get(pctldev->dev);
 
 	if (!IS_ERR(pctldev->p)) {
@@ -758,14 +834,21 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 				dev_err(dev,
 					"failed to select default state\n");
 		}
-
-		pctldev->hog_sleep =
+        
+		/*记录pinctrl中sleep_state，是为了能快速调用进入睡眠吗？*/
+		pctldev->hog_sleep = 
 			pinctrl_lookup_state(pctldev->p,
 						    PINCTRL_STATE_SLEEP);
 		if (IS_ERR(pctldev->hog_sleep))
 			dev_dbg(dev, "failed to lookup the sleep state\n");
 	}
 
+    /*
+     * 这个可能用于显示在文件系统
+     * 里面已经包含了所有pin的名字，序号
+     * func的信息，group的信息，pin的信息
+     * config，mux的值等
+    */
 	pinctrl_init_device_debugfs(pctldev);
 
 	return pctldev;
@@ -777,12 +860,13 @@ out_err:
 }
 ```
 
-### pinctrl_register_pins
+### 1-2-2-1-1 pinctrl_register_pins()
 
 ```C
 /*
- * 根据pinctrl_pin_desc中的内容，申请并初始化对应数量的pin_desc
+ * 根据pinctrl_pin_desc，申请并初始化对应数量的pin_desc
  * 并按pin号，顺序挂入pinctrl_dev的pin_desc_tree上进行管理
+ * 由此可知，pinctrl_dev记录了soc的所有pin号和名字
  */
 static int pinctrl_register_pins(struct pinctrl_dev *pctldev,
 				 struct pinctrl_pin_desc const *pins,
@@ -801,17 +885,17 @@ static int pinctrl_register_pins(struct pinctrl_dev *pctldev,
 }
 ```
 
-### pinctrl_register_one_pin
+### 1-2-2-1-1-1 pinctrl_register_one_pin()
 
 ```C
+/*申请一个pin_desc描述pinctrl_pin_desc，并按序号挂入pinctrl_dev的tree下*/
 static int pinctrl_register_one_pin(struct pinctrl_dev *pctldev,
 				    const struct pinctrl_pin_desc *pin)
 {
 	struct pin_desc *pindesc;
     
 	/*
-	 * pinctrl_pin_desc 为const数组，已经是固定内容，pin number都是唯一的
-	 * 检查pin->number是否已经存在pin_desc_tree里
+	 * 检查pin号是否已存在pin_desc_tree里
 	 */
 	pindesc = pin_desc_get(pctldev, pin->number);
 	if (pindesc != NULL) {
@@ -828,19 +912,19 @@ static int pinctrl_register_one_pin(struct pinctrl_dev *pctldev,
 	}
 
 	/* Set owner */
-    /*该pin_desc归属某个pinctrl_dev*/
+    /*该pin_desc归属的pinctrl_dev*/
 	pindesc->pctldev = pctldev;
 
 	/* Copy basic pin info */
-	if (pin->name) { /*name是固定内容*/
+	if (pin->name) { /*pin的名字，为字符串*/
 		pindesc->name = pin->name;
-	} else {
+	} else {/*如果没名字，使用动态命名，如pin18*/
 		pindesc->name = kasprintf(GFP_KERNEL, "PIN%u", pin->number);
 		if (pindesc->name == NULL) {
 			kfree(pindesc);
 			return -ENOMEM;
 		}
-		pindesc->dynamic_name = true;/*使用动态命名*/
+		pindesc->dynamic_name = true;
 	}
 
 	pindesc->drv_data = pin->drv_data;/*私有数据，由前面可知，为空*/
@@ -853,7 +937,7 @@ static int pinctrl_register_one_pin(struct pinctrl_dev *pctldev,
 }
 ```
 
-### pinctrl_get
+### 1-2-2-1-1-2 pinctrl_get()
 
 ```C
 /**
@@ -872,18 +956,20 @@ struct pinctrl *pinctrl_get(struct device *dev)
 	 * obtained a handle to the pinctrl for this device. In that case,
 	 * return another pointer to it.
 	 */
-	p = find_pinctrl(dev); /*查找该device中是否有pinctrl*/
+    /*查找全局pinctrl_list中是否有pinctrl对应传入的dev，即该device自己的pinctrl*/
+	p = find_pinctrl(dev); 
 	if (p != NULL) {
 		dev_dbg(dev, "obtain a copy of previously claimed pinctrl\n");
 		kref_get(&p->users);
 		return p;
 	}
 
-	return create_pinctrl(dev);/*不存在，申请新的pinctrl*/
+    /*没找到，则为该device申请新的pinctrl*/
+	return create_pinctrl(dev);
 }
 ```
 
-### find_pinctrl
+### 1-2-2-1-1-2-1 find_pinctrl()
 
 ```C
 static struct pinctrl *find_pinctrl(struct device *dev)
@@ -891,8 +977,8 @@ static struct pinctrl *find_pinctrl(struct device *dev)
 	struct pinctrl *p;
 
 	mutex_lock(&pinctrl_list_mutex);
-	list_for_each_entry(p, &pinctrl_list, node)
-		if (p->dev == dev) {
+	list_for_each_entry(p, &pinctrl_list, node)/*遍历pinctrl_list*/
+		if (p->dev == dev) {/*是否这个pinctrl属于这个dev*/
 			mutex_unlock(&pinctrl_list_mutex);
 			return p;
 		}
@@ -902,7 +988,7 @@ static struct pinctrl *find_pinctrl(struct device *dev)
 }
 ```
 
-### pinctrl
+### struct pinctrl
 
 ```C
 /**
@@ -941,7 +1027,7 @@ struct pinctrl {
 };
 ```
 
-### create_pinctrl
+### 1-2-2-1-1-2-2 create_pinctrl()
 
 ```C
 static struct pinctrl *create_pinctrl(struct device *dev)
@@ -964,8 +1050,19 @@ static struct pinctrl *create_pinctrl(struct device *dev)
 		dev_err(dev, "failed to alloc struct pinctrl\n");
 		return ERR_PTR(-ENOMEM);
 	}
-	p->dev = dev;/*记录所属dev*/
+    /*
+     * 记录所属device，为啥不保存在 struct dev_pin_info  *pins;
+     * 我猜测是执行really_probe的时候才会创建pins的内存。
+     * 这时候查找全局list来匹配dev，再放入pins
+     */
+	p->dev = dev;
+    
+    
+
+    /*初始化链表，用于保存pinctrl-name中的各个状态，如"default"*/
 	INIT_LIST_HEAD(&p->states);
+    
+    /*初始化链表，用于保存pinctrl_map*/
 	INIT_LIST_HEAD(&p->dt_maps);
 
 	ret = pinctrl_dt_to_map(p);
@@ -1023,11 +1120,16 @@ static struct pinctrl *create_pinctrl(struct device *dev)
 }
 ```
 
-### pinctrl_dt_to_map
+### 1-2-2-1-1-2-2-1 pinctrl_dt_to_map()
 
 ```C
 int pinctrl_dt_to_map(struct pinctrl *p)
 {
+    /* 
+     * pinctrl_name = "default"; pinctrl-0 = <&node0>;
+     * 先前解析的是iomuxc中的group，此时需要解析上面的node
+     * 对应真正的device，而不是platform_device的iomuxc
+     */
 	struct device_node *np = p->dev->of_node;
 	int state, ret;
 	char *propname;
@@ -1051,26 +1153,37 @@ int pinctrl_dt_to_map(struct pinctrl *p)
 	of_node_get(np);
 
 	/* For each defined state ID */
+    /*
+     * state：对应phandle数量
+     * config：对应引用的node数量
+     */
 	for (state = 0; ; state++) {
 		/* Retrieve the pinctrl-* property */
-        /*检索 pinctrl-**/
+        
+        /*如：构造 pinctrl-0 字符串*/
 		propname = kasprintf(GFP_KERNEL, "pinctrl-%d", state);
         
-        /*找到其内容及size长度*/
+        /*找到属性"pinctrl-0"，获取内容及size长度*/
 		prop = of_find_property(np, propname, &size);
+        
 		kfree(propname);/*使用完毕，释放内存*/
-		if (!prop) {
+        
+		if (!prop) {/*如果没有该属性，则退出*/
 			if (state == 0) {
 				of_node_put(np);
 				return -ENODEV;
 			}
 			break;
 		}
-		list = prop->value;/*内容为某个节点的名字 <&state_0_node_a>*/
+        
+        /*内容：phandle值（如 0x1f），引用了iomuxc中的某个group*/
+		list = prop->value;
+        
+        /*引用了多少个node（group）*/
 		size /= sizeof(*list);
 
 		/* Determine whether pinctrl-names property names the state */
-        /*在iomuxc节点作为根节点，找到第state个字符串 如"idle"的内容*/
+        /*处理状态，找到第state个字符串 如"idle" "sleep"*/
 		ret = of_property_read_string_index(np, "pinctrl-names",
 						    state, &statename);
 		/*
@@ -1078,16 +1191,24 @@ int pinctrl_dt_to_map(struct pinctrl *p)
 		 * than dynamically allocate it and have to free it later,
 		 * just point part way into the property name for the string.
 		 */
-		if (ret < 0) {
+		if (ret < 0) { /*如果有pinctrl-0，但没有pinctrl-name，则指向'0'这个字符*/
 			/* strlen("pinctrl-") == 8 */
 			statename = prop->name + 8;
 		}
 
 		/* For every referenced pin configuration node in it */
+        /*
+         * state：对应phandle数量，config：对应引用的node数量
+         * pinctrl-0中，为当前state选中的group
+         * 里面的每个pin创建pinctrl_map结构
+         */
 		for (config = 0; config < size; config++) {
+            
+            /*list++,如果该 pinctrl-* 后续还有其他phandle的话*/
 			phandle = be32_to_cpup(list++);
 
 			/* Look up the pin configuration node */
+            /*根据phandle找到对应的节点device_node*/
 			np_config = of_find_node_by_phandle(phandle);
 			if (!np_config) {
 				dev_err(p->dev,
@@ -1098,6 +1219,7 @@ int pinctrl_dt_to_map(struct pinctrl *p)
 			}
 
 			/* Parse the node */
+            /*为当前group创建多个pinctrl_map*/
 			ret = dt_to_map_one_config(p, statename, np_config);
 			of_node_put(np_config);
 			if (ret < 0)
@@ -1120,9 +1242,10 @@ err:
 }
 ```
 
-### dt_to_map_one_config
+### 1-2-2-1-1-2-2-1-1 dt_to_map_one_config()
 
 ```C
+/*根据group及其pin，创建pinctrl_map */
 static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 				struct device_node *np_config)
 {
@@ -1134,8 +1257,11 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 	unsigned num_maps;
 
 	/* Find the pin controller containing np_config */
+    /*增加kobj的引用计数*/
 	np_pctldev = of_node_get(np_config);
+    
 	for (;;) {
+        /*获取其parent，应该是imx6ul_evk节点*/
 		np_pctldev = of_get_next_parent(np_pctldev);
 		if (!np_pctldev || of_node_is_root(np_pctldev)) {
 			dev_info(p->dev, "could not find pctldev for node %s, deferring probe\n",
@@ -1144,6 +1270,12 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 			/* OK let's just assume this will appear later then */
 			return -EPROBE_DEFER;
 		}
+        
+        /*
+         * 寻找全局pinctrldev_list
+         * 找到 pctldev->dev->of_node == np_pctldev
+         * 这里有个疑惑，是imx6ul_evk下，每个group都会生成一个pinctrl_dev吗
+         */
 		pctldev = get_pinctrl_dev_from_of_node(np_pctldev);
 		if (pctldev)
 			break;
@@ -1159,12 +1291,19 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 	 * Call pinctrl driver to parse device tree node, and
 	 * generate mapping table entries
 	 */
+    /*获取pinctrl ops，这个函数由芯片厂商写，处理自家芯片的dt配置*/
 	ops = pctldev->desc->pctlops;
+    
 	if (!ops->dt_node_to_map) {
 		dev_err(p->dev, "pctldev %s doesn't support DT\n",
 			dev_name(pctldev->dev));
 		return -ENODEV;
 	}
+    /*
+     * 执行imx_dt_node_to_map,创建pinctrl_map
+     * np_config：需要生成map的节点device_node
+     * 对应自己的pinctrl_dev
+     */
 	ret = ops->dt_node_to_map(pctldev, np_config, &map, &num_maps);
 	if (ret < 0)
 		return ret;
@@ -1174,11 +1313,310 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 }
 ```
 
+### struct pinctrl_map_mux
 
+```C
+struct pinctrl_map_mux {
+	const char *group;
+	const char *function;
+};
+```
 
+### struct pinctrl_map_configs
 
+```C
+struct pinctrl_map_configs {
+	const char *group_or_pin;
+	unsigned long *configs;
+	unsigned num_configs;
+};
+```
 
-- 要记住，此时的probe中，dtb已经提取并转换成device_node（iomuxc节点生成platform_device，但其子节点不会生成platform_device）
+### enum pinctrl_map_type
 
-- 看5.10源码时发现，imx_pinctrl_soc_info结构体发生了很大的变化，因此看回4.9
+```C
+enum pinctrl_map_type {
+	PIN_MAP_TYPE_INVALID,
+	PIN_MAP_TYPE_DUMMY_STATE,
+	PIN_MAP_TYPE_MUX_GROUP,
+	PIN_MAP_TYPE_CONFIGS_PIN,
+	PIN_MAP_TYPE_CONFIGS_GROUP,
+};
+```
+
+### struct pinctrl_map
+
+```C
+struct pinctrl_map {
+	const char *dev_name;
+	const char *name;
+	enum pinctrl_map_type type;
+	const char *ctrl_dev_name;
+	union {
+		struct pinctrl_map_mux mux;
+		struct pinctrl_map_configs configs;
+	} data;
+};
+```
+
+### 1-2-2-1-1-2-2-1-1-1 imx_dt_node_to_map()
+
+```C
+static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
+			struct device_node *np,
+			struct pinctrl_map **map, unsigned *num_maps)
+{
+	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
+	const struct imx_pinctrl_soc_info *info = ipctl->info;
+	const struct imx_pin_group *grp;
+	struct pinctrl_map *new_map;imx_dt_node_to_map
+	struct device_node *parent;
+	int map_num = 1;
+	int i, j;
+
+	/*
+	 * first find the group of this node and check if we need create
+	 * config maps for pins
+	 */
+    /*在pinctrl_dev->pin_group_tree中寻找*/
+	grp = imx_pinctrl_find_group_by_name(info, np->name);
+	if (!grp) {
+		dev_err(info->dev, "unable to find group for node %s\n",
+			np->name);
+		return -EINVAL;
+	}
+
+     /*
+      * #define IMX_NO_PAD_CTL  0x80000000   //no pin config need
+      * 确认需要生成的map个数
+      */
+	for (i = 0; i < grp->npins; i++) {
+		if (!(grp->pins[i].config & IMX_NO_PAD_CTL))
+			map_num++;
+	}
+
+    /*申请 n+1个pinctrl_map 内存*/
+	new_map = kmalloc(sizeof(struct pinctrl_map) * map_num, GFP_KERNEL);
+	if (!new_map)
+		return -ENOMEM;
+
+    /*保存，用于返回*/
+	*map = new_map;
+	*num_maps = map_num;
+
+	/* create mux map */
+	parent = of_get_parent(np);
+	if (!parent) {
+		kfree(new_map);
+		return -EINVAL;
+	}
+    /*标记为 PIN_MAP_TYPE_MUX_GROUP*/
+	new_map[0].type = PIN_MAP_TYPE_MUX_GROUP;
+	new_map[0].data.mux.function = parent->name;/*"imx6ul_evk"*/
+	new_map[0].data.mux.group = np->name;/*"i2cgrp"*/
+	of_node_put(parent);
+
+	/* create config map */
+	new_map++;
+	for (i = j = 0; i < grp->npins; i++) {
+		if (!(grp->pins[i].config & IMX_NO_PAD_CTL)) {
+            /*标记为pin*/
+			new_map[j].type = PIN_MAP_TYPE_CONFIGS_PIN;
+            
+            /*这些参数都是刚刚前面配置好的，保存在soc的imx_pin_group*/
+            /*pin的名字*/
+			new_map[j].data.configs.group_or_pin =
+					pin_get_name(pctldev, grp->pins[i].pin);
+            
+            /*pin的配置*/
+			new_map[j].data.configs.configs = &grp->pins[i].config;
+			new_map[j].data.configs.num_configs = 1;
+			j++;
+		}
+	}
+
+	dev_dbg(pctldev->dev, "maps: function %s group %s num %d\n",
+		(*map)->data.mux.function, (*map)->data.mux.group, map_num);
+
+	return 0;
+}
+```
+
+### 1-2-2-1-1-2-2-2 add_setting()
+
+```C
+/*
+ * 关系：pinctrl->state --- state1 
+ *                     --- state2
+ *      state->setting --- setting1
+ *                     --- setting2
+ * 为pinctrl_state中的每个map都创建一个setting，在create_pinctrl中被轮循调用
+ */
+static int add_setting(struct pinctrl *p, struct pinctrl_map const *map)
+{
+	struct pinctrl_state *state;
+	struct pinctrl_setting *setting;
+	int ret;
+
+	state = find_state(p, map->name);
+	if (!state)/*从dev与drv的probe路径，此state为空，创建state*/
+		state = create_state(p, map->name);
+	if (IS_ERR(state))
+		return PTR_ERR(state);
+
+	if (map->type == PIN_MAP_TYPE_DUMMY_STATE)
+		return 0;
+
+    /*申请 setting 内存*/
+	setting = kzalloc(sizeof(*setting), GFP_KERNEL);
+	if (setting == NULL) {
+		dev_err(p->dev,
+			"failed to alloc struct pinctrl_setting\n");
+		return -ENOMEM;
+	}
+	
+    /*复制该类型。如 PIN_MAP_TYPE_MUX_GROUP*/
+	setting->type = map->type;
+
+	setting->pctldev = get_pinctrl_dev_from_devname(map->ctrl_dev_name);
+	if (setting->pctldev == NULL) {
+		kfree(setting);
+		/* Do not defer probing of hogs (circular loop) */
+		if (!strcmp(map->ctrl_dev_name, map->dev_name))
+			return -ENODEV;
+		/*
+		 * OK let us guess that the driver is not there yet, and
+		 * let's defer obtaining this pinctrl handle to later...
+		 */
+		dev_info(p->dev, "unknown pinctrl device %s in map entry, deferring probe",
+			map->ctrl_dev_name);
+		return -EPROBE_DEFER;
+	}
+
+	setting->dev_name = map->dev_name;
+	
+    /*将map转换，并记录在setting*/
+	switch (map->type) {
+	case PIN_MAP_TYPE_MUX_GROUP:
+		ret = pinmux_map_to_setting(map, setting);
+		break;
+	case PIN_MAP_TYPE_CONFIGS_PIN:
+	case PIN_MAP_TYPE_CONFIGS_GROUP:
+		ret = pinconf_map_to_setting(map, setting);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+	if (ret < 0) {
+		kfree(setting);
+		return ret;
+	}
+
+    /*加入state->node 链表，表示该state有多少种setting*/
+	list_add_tail(&setting->node, &state->settings);
+
+	return 0;
+}
+```
+
+### 1-2-2-1-1-2-2-2-1 create_state()
+
+```C
+static struct pinctrl_state *create_state(struct pinctrl *p,
+					  const char *name)
+{
+	struct pinctrl_state *state;
+
+    /*申请 state 内存*/
+	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	if (state == NULL) {
+		dev_err(p->dev,
+			"failed to alloc struct pinctrl_state\n");
+		return ERR_PTR(-ENOMEM);
+	}
+
+	state->name = name;
+	INIT_LIST_HEAD(&state->settings);
+
+    /*加入 pinctrl->states 链表，表示为该device有多少种state*/
+	list_add_tail(&state->node, &p->states);
+
+	return state;
+}
+```
+
+### 1-2-2-1-1-2-2-2-2 pinmux_map_to_setting
+
+```C
+int pinmux_map_to_setting(struct pinctrl_map const *map,
+			  struct pinctrl_setting *setting)
+{
+	struct pinctrl_dev *pctldev = setting->pctldev;
+	const struct pinmux_ops *pmxops = pctldev->desc->pmxops;
+	char const * const *groups;
+	unsigned num_groups;
+	int ret;
+	const char *group;
+
+	if (!pmxops) {
+		dev_err(pctldev->dev, "does not support mux function\n");
+		return -EINVAL;
+	}
+
+    /*function转换为index*/
+	ret = pinmux_func_name_to_selector(pctldev, map->data.mux.function);
+	if (ret < 0) {
+		dev_err(pctldev->dev, "invalid function %s in map table\n",
+			map->data.mux.function);
+		return ret;
+	}
+    /*记录index*/
+	setting->data.mux.func = ret;
+
+	ret = pmxops->get_function_groups(pctldev, setting->data.mux.func,
+					  &groups, &num_groups);
+	if (ret < 0) {
+		dev_err(pctldev->dev, "can't query groups for function %s\n",
+			map->data.mux.function);
+		return ret;
+	}
+	if (!num_groups) {
+		dev_err(pctldev->dev,
+			"function %s can't be selected on any group\n",
+			map->data.mux.function);
+		return -EINVAL;
+	}
+	if (map->data.mux.group) {
+		group = map->data.mux.group;
+		ret = match_string(groups, num_groups, group);
+		if (ret < 0) {
+			dev_err(pctldev->dev,
+				"invalid group \"%s\" for function \"%s\"\n",
+				group, map->data.mux.function);
+			return ret;
+		}
+	} else {
+		group = groups[0];
+	}
+
+    /*group转换为index*/
+	ret = pinctrl_get_group_selector(pctldev, group);
+	if (ret < 0) {
+		dev_err(pctldev->dev, "invalid group %s in map table\n",
+			map->data.mux.group);
+		return ret;
+	}
+    /*记录index*/
+	setting->data.mux.group = ret;
+
+	return 0;
+}
+```
+
+## 总结
+
+要记住，此时的probe中，dtb已经提取并转换成device_node（iomuxc节点生成platform_device，但其子节点不会生成platform_device）
+
+看5.10源码时发现，imx_pinctrl_soc_info结构体发生了很大的变化，因此看回4.9
 
