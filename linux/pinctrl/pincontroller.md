@@ -26,7 +26,29 @@ pincontroller{
 		...
 	};    
 };
+
+
+/*该node描述在device的pins成员中*/
+device { 
+    
+    /*该设备的可切换的状态*/
+	pinctrl-names = "default", "sleep"; 
+    
+    /*某个pin*/
+	pinctrl-0 = <&state_0_node_a>; 
+	pinctrl-1 = <&state_1_node_a &state_1_node_b>;
+}
 ```
+
+### 转换过程
+
+```c
+dt的<&state_0_node_a> -> pinctrl_map -> pinctrl_setting
+
+将 pinctrl_setting 存入 pinctrl_state.setting
+```
+
+
 
 ### pincontroller作用
 
@@ -367,4 +389,10 @@ struct pinctrl_map_configs {
 };
 ```
 
-- function：iomuxc下的子节点都是为function，但是在imx6ull中，“imx6ul_evk“节点为function（其实理解为该单个board使用到的外设group节点），“imx6ul_evk“节点下有很多个外设group节点，每个group下有很多个pin
+## 总结
+
+要记住，此时的probe中，dtb已经提取并转换成device_node（iomuxc节点生成platform_device，但其子节点不会生成platform_device）
+
+看5.10源码时发现，imx_pinctrl_soc_info结构体发生了很大的变化，因此看回4.9
+
+function：iomuxc下的子节点都是为function，但是在imx6ull中，“imx6ul_evk“节点为function（其实理解为该单个board使用到的外设group节点），“imx6ul_evk“节点下有很多个外设group节点，每个group下有很多个pin

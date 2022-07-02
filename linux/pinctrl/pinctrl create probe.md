@@ -1030,6 +1030,7 @@ struct pinctrl {
 ### 1-2-2-1-1-2-2 create_pinctrl()
 
 ```C
+/*传入的dev属于iomuxc节点，上面创建的与dev关联的pinctrl_dev，也是属于iomuxc节点*/
 static struct pinctrl *create_pinctrl(struct device *dev)
 {
 	struct pinctrl *p;
@@ -1052,7 +1053,7 @@ static struct pinctrl *create_pinctrl(struct device *dev)
 	}
     /*
      * 记录所属device，为啥不保存在 struct dev_pin_info  *pins;
-     * 我猜测是执行really_probe的时候才会创建pins的内存。
+     * 是执行really_probe的时候才会创建pins的内存。
      * 这时候查找全局list来匹配dev，再放入pins
      */
 	p->dev = dev;
@@ -1065,6 +1066,11 @@ static struct pinctrl *create_pinctrl(struct device *dev)
     /*初始化链表，用于保存pinctrl_map*/
 	INIT_LIST_HEAD(&p->dt_maps);
 
+    /*
+     * 取出 pinctrl_dev--> imx_pinctrl --> 
+     * imx_pinctrl_soc_info --> imx_pin_group --> imx_pin
+     * 生成保存config值的pinctrl_map
+     */
 	ret = pinctrl_dt_to_map(p);
 	if (ret < 0) {
 		kfree(p);
@@ -1179,7 +1185,7 @@ int pinctrl_dt_to_map(struct pinctrl *p)
         /*内容：phandle值（如 0x1f），引用了iomuxc中的某个group*/
 		list = prop->value;
         
-        /*引用了多少个node（group）*/
+        /*引用了多少个node（phandle）*/
 		size /= sizeof(*list);
 
 		/* Determine whether pinctrl-names property names the state */
@@ -1219,7 +1225,7 @@ int pinctrl_dt_to_map(struct pinctrl *p)
 			}
 
 			/* Parse the node */
-            /*为当前group创建多个pinctrl_map*/
+            /*为当前state的当前phandle，创建一个pinctrl_map用于记录*/
 			ret = dt_to_map_one_config(p, statename, np_config);
 			of_node_put(np_config);
 			if (ret < 0)
@@ -1261,7 +1267,7 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 	np_pctldev = of_node_get(np_config);
     
 	for (;;) {
-        /*获取其parent，应该是imx6ul_evk节点*/
+        /*获取其parent，应该是iomuxc节点,该pinctrl_dev保存了生成map的必要信息*/
 		np_pctldev = of_get_next_parent(np_pctldev);
 		if (!np_pctldev || of_node_is_root(np_pctldev)) {
 			dev_info(p->dev, "could not find pctldev for node %s, deferring probe\n",
@@ -1300,9 +1306,9 @@ static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
 		return -ENODEV;
 	}
     /*
-     * 执行imx_dt_node_to_map,创建pinctrl_map
-     * np_config：需要生成map的节点device_node
-     * 对应自己的pinctrl_dev
+     * 执行imx_dt_node_to_map,
+     * 利用需要生成map的节点device_node(np_config)
+     * 创建一个pinctrl_map，解析和生成需要pinctrl_dev
      */
 	ret = ops->dt_node_to_map(pctldev, np_config, &map, &num_maps);
 	if (ret < 0)
@@ -1359,26 +1365,110 @@ struct pinctrl_map {
 };
 ```
 
+### struct pinctrl_state
+
+```C
+/**
+ * struct pinctrl_state - a pinctrl state for a device
+ * @node: list node for struct pinctrl's @states field
+ * @name: the name of this state
+ * @settings: a list of settings for this state
+ */
+struct pinctrl_state {
+	struct list_head node;
+	const char *name;
+	struct list_head settings; 
+};
+
+```
+
+### struct pinctrl_setting
+
+```C
+/**
+ * struct pinctrl_setting - an individual mux or config setting
+ * @node: list node for struct pinctrl_settings's @settings field
+ * @type: the type of setting
+ * @pctldev: pin control device handling to be programmed. Not used for
+ *   PIN_MAP_TYPE_DUMMY_STATE.
+ * @dev_name: the name of the device using this state
+ * @data: Data specific to the setting type
+ */
+struct pinctrl_setting {
+	struct list_head node;
+	enum pinctrl_map_type type;
+	struct pinctrl_dev *pctldev;
+	const char *dev_name;
+	union {
+		struct pinctrl_setting_mux mux;
+		struct pinctrl_setting_configs configs;
+	} data;
+};
+```
+
+### struct pinctrl_setting_mux
+
+```
+
+/**
+ * struct pinctrl_setting_mux - setting data for MAP_TYPE_MUX_GROUP
+ * @group: the group selector to program
+ * @func: the function selector to program
+ */
+struct pinctrl_setting_mux {
+	unsigned group;
+	unsigned func;
+};
+```
+
+### struct pinctrl_setting_configs
+
+```C
+/**
+ * struct pinctrl_setting_configs - setting data for MAP_TYPE_CONFIGS_*
+ * @group_or_pin: the group selector or pin ID to program
+ * @configs: a pointer to an array of config parameters/values to program into
+ *	hardware. Each individual pin controller defines the format and meaning
+ *	of config parameters.
+ * @num_configs: the number of entries in array @configs
+ */
+struct pinctrl_setting_configs {
+	unsigned group_or_pin;
+	unsigned long *configs;
+	unsigned num_configs;
+};
+```
+
 ### 1-2-2-1-1-2-2-1-1-1 imx_dt_node_to_map()
 
 ```C
+/*传入的np为需要生成map的group*/
 static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
 			struct device_node *np,
 			struct pinctrl_map **map, unsigned *num_maps)
 {
+    /*
+     * ipctl = pctldev->driver_data;
+     * 获得私有指针指向的imx_pinctrl 
+     * 取出imx_pinctrl_soc_info，用于生成pinctrl_map
+     */
 	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
 	const struct imx_pinctrl_soc_info *info = ipctl->info;
 	const struct imx_pin_group *grp;
-	struct pinctrl_map *new_map;imx_dt_node_to_map
+	struct pinctrl_map *new_map;
 	struct device_node *parent;
-	int map_num = 1;
+	int map_num = 1;/*记住这个是1开始，生成n+1个pinctrl_map*/
 	int i, j;
 
 	/*
 	 * first find the group of this node and check if we need create
 	 * config maps for pins
 	 */
-    /*在pinctrl_dev->pin_group_tree中寻找*/
+    /*
+     * 遍历整个imx_pinctrl_soc_info->groups[i].name
+     * 找到名字匹配的group，取出对应组的imx_pin_group结构
+     * 用于生成pinctrl_map
+     */
 	grp = imx_pinctrl_find_group_by_name(info, np->name);
 	if (!grp) {
 		dev_err(info->dev, "unable to find group for node %s\n",
@@ -1388,7 +1478,7 @@ static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
 
      /*
       * #define IMX_NO_PAD_CTL  0x80000000   //no pin config need
-      * 确认需要生成的map个数
+      * grp->npins：该group的pin数量，也表示生成map的数量
       */
 	for (i = 0; i < grp->npins; i++) {
 		if (!(grp->pins[i].config & IMX_NO_PAD_CTL))
@@ -1400,35 +1490,51 @@ static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
 	if (!new_map)
 		return -ENOMEM;
 
-    /*保存，用于返回*/
+    /*二级指针，用于返回*/
 	*map = new_map;
 	*num_maps = map_num;
 
 	/* create mux map */
+    /*取parent，获得function*/
 	parent = of_get_parent(np);
 	if (!parent) {
 		kfree(new_map);
 		return -EINVAL;
 	}
+    
     /*标记为 PIN_MAP_TYPE_MUX_GROUP*/
 	new_map[0].type = PIN_MAP_TYPE_MUX_GROUP;
-	new_map[0].data.mux.function = parent->name;/*"imx6ul_evk"*/
-	new_map[0].data.mux.group = np->name;/*"i2cgrp"*/
+    
+    /*"imx6ul_evk"*/
+	new_map[0].data.mux.function = parent->name;
+    
+    /*如："i2cgrp"*/
+	new_map[0].data.mux.group = np->name;
+    
 	of_node_put(parent);
 
 	/* create config map */
 	new_map++;
+    
+    /*记录该group的每个pin的配置值*/
 	for (i = j = 0; i < grp->npins; i++) {
 		if (!(grp->pins[i].config & IMX_NO_PAD_CTL)) {
             /*标记为pin*/
 			new_map[j].type = PIN_MAP_TYPE_CONFIGS_PIN;
             
-            /*这些参数都是刚刚前面配置好的，保存在soc的imx_pin_group*/
-            /*pin的名字*/
+            /*
+             * 保存在imx_pinctrl_soc_info的imx_pin_group
+             * 里面的imx_pin的pin成员，指的是pin号
+             * 根据pin号，在pinctrl_dev的pin_desc_tree中
+             * 找到pin号对应的名字，并返回
+             */
 			new_map[j].data.configs.group_or_pin =
 					pin_get_name(pctldev, grp->pins[i].pin);
             
-            /*pin的配置*/
+            /*
+             * 如：MX6UL_PAD_UART1_RTS_B__GPIO1_IO19 0x17059
+             * config值：0x17059
+             */
 			new_map[j].data.configs.configs = &grp->pins[i].config;
 			new_map[j].data.configs.num_configs = 1;
 			j++;
@@ -1446,10 +1552,11 @@ static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 ```C
 /*
- * 关系：pinctrl->state --- state1 
- *                     --- state2
- *      state->setting --- setting1
- *                     --- setting2
+ * 关系：pinctrl->state -> state1 -> setting1
+ *                               -> setting2               
+ *                     -> state2 -> setting3
+ *                               -> setting4
+ *          
  * 为pinctrl_state中的每个map都创建一个setting，在create_pinctrl中被轮循调用
  */
 static int add_setting(struct pinctrl *p, struct pinctrl_map const *map)
@@ -1459,7 +1566,7 @@ static int add_setting(struct pinctrl *p, struct pinctrl_map const *map)
 	int ret;
 
 	state = find_state(p, map->name);
-	if (!state)/*从dev与drv的probe路径，此state为空，创建state*/
+	if (!state)/*构造pinctrl情况，此state为空，创建state*/
 		state = create_state(p, map->name);
 	if (IS_ERR(state))
 		return PTR_ERR(state);
@@ -1475,7 +1582,7 @@ static int add_setting(struct pinctrl *p, struct pinctrl_map const *map)
 		return -ENOMEM;
 	}
 	
-    /*复制该类型。如 PIN_MAP_TYPE_MUX_GROUP*/
+    /*复制该类型。如:PIN_MAP_TYPE_MUX_GROUP*/
 	setting->type = map->type;
 
 	setting->pctldev = get_pinctrl_dev_from_devname(map->ctrl_dev_name);
@@ -1495,7 +1602,7 @@ static int add_setting(struct pinctrl *p, struct pinctrl_map const *map)
 
 	setting->dev_name = map->dev_name;
 	
-    /*将map转换，并记录在setting*/
+    /*将map转换成setting*/
 	switch (map->type) {
 	case PIN_MAP_TYPE_MUX_GROUP:
 		ret = pinmux_map_to_setting(map, setting);
@@ -1564,7 +1671,7 @@ int pinmux_map_to_setting(struct pinctrl_map const *map,
 		return -EINVAL;
 	}
 
-    /*function转换为index*/
+    /*function name转换为index*/
 	ret = pinmux_func_name_to_selector(pctldev, map->data.mux.function);
 	if (ret < 0) {
 		dev_err(pctldev->dev, "invalid function %s in map table\n",
@@ -1574,6 +1681,7 @@ int pinmux_map_to_setting(struct pinctrl_map const *map,
     /*记录index*/
 	setting->data.mux.func = ret;
 
+    /*该func下有哪些group，保存在groups*/
 	ret = pmxops->get_function_groups(pctldev, setting->data.mux.func,
 					  &groups, &num_groups);
 	if (ret < 0) {
@@ -1587,6 +1695,7 @@ int pinmux_map_to_setting(struct pinctrl_map const *map,
 			map->data.mux.function);
 		return -EINVAL;
 	}
+    /*判断group是否能够复用mux为该func*/
 	if (map->data.mux.group) {
 		group = map->data.mux.group;
 		ret = match_string(groups, num_groups, group);
@@ -1598,9 +1707,9 @@ int pinmux_map_to_setting(struct pinctrl_map const *map,
 		}
 	} else {
 		group = groups[0];
-	}
+	} 
 
-    /*group转换为index*/
+    /*group name转换为index*/
 	ret = pinctrl_get_group_selector(pctldev, group);
 	if (ret < 0) {
 		dev_err(pctldev->dev, "invalid group %s in map table\n",
@@ -1614,9 +1723,46 @@ int pinmux_map_to_setting(struct pinctrl_map const *map,
 }
 ```
 
-## 总结
+### 1-2-2-1-1-2-2-2-2 pinconf_map_to_setting
 
-要记住，此时的probe中，dtb已经提取并转换成device_node（iomuxc节点生成platform_device，但其子节点不会生成platform_device）
+```C
+int pinconf_map_to_setting(struct pinctrl_map const *map,
+			  struct pinctrl_setting *setting)
+{
+	struct pinctrl_dev *pctldev = setting->pctldev;
+	int pin;
 
-看5.10源码时发现，imx_pinctrl_soc_info结构体发生了很大的变化，因此看回4.9
+	switch (setting->type) {
+	case PIN_MAP_TYPE_CONFIGS_PIN:
+		pin = pin_get_from_name(pctldev,
+					map->data.configs.group_or_pin);
+		if (pin < 0) {
+			dev_err(pctldev->dev, "could not map pin config for \"%s\"",
+				map->data.configs.group_or_pin);
+			return pin;
+		}
+		setting->data.configs.group_or_pin = pin;
+		break;
+	case PIN_MAP_TYPE_CONFIGS_GROUP:
+		pin = pinctrl_get_group_selector(pctldev,
+					 map->data.configs.group_or_pin);
+		if (pin < 0) {
+			dev_err(pctldev->dev, "could not map group config for \"%s\"",
+				map->data.configs.group_or_pin);
+			return pin;
+		}
+		setting->data.configs.group_or_pin = pin;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	setting->data.configs.num_configs = map->data.configs.num_configs;
+	setting->data.configs.configs = map->data.configs.configs;
+
+	return 0;
+}
+```
+
+
 
