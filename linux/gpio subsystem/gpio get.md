@@ -574,9 +574,450 @@ done:
 }
 ```
 
+### 1-2-1 gpiochip_generic_request()
+
+```C
+/* 即：chip->request(chip, gpio_chip_hwgpio(desc)); */
+/**
+ * gpiochip_generic_request() - request the gpio function for a pin
+ * @chip: the gpiochip owning the GPIO
+ * @offset: the offset of the GPIO to request for GPIO function
+ */
+int gpiochip_generic_request(struct gpio_chip *chip, unsigned offset)
+{
+    /*gpio1_io15
+     * 传入总gpio号，如转换了gpio1_io15 和 gpio1_io16这两个引脚
+     * 那么获取时，传入(gpio1_io15 + 0)或(gpio1_io15 + 1)
+    */
+	return pinctrl_request_gpio(chip->gpiodev->base + offset);
+}
 
 
 
+/**
+ * pinctrl_request_gpio() - request a single pin to be used as GPIO
+ * @gpio: the GPIO pin number from the GPIO subsystem number space
+ *
+ * This function should *ONLY* be used from gpiolib-based GPIO drivers,
+ * as part of their gpio_request() semantics, platforms and individual drivers
+ * shall *NOT* request GPIO pins to be muxed in.
+ */
+int pinctrl_request_gpio(unsigned gpio)
+{
+	struct pinctrl_dev *pctldev;
+	struct pinctrl_gpio_range *range;
+	int ret;
+	int pin;
+
+    /* 
+     * 1. 在gpio子系统中，会进行probe，此时已经将
+     *    gpio与pinctrl的对应关系转换，此时可直接使用。
+     * 2. 在存放全局pinctrl_dev的list中，一个个匹配
+     *     pinctrl_dev，寻找有建立过对应关系的range，
+     *     返回值保存在pctldev和range。
+     */
+	ret = pinctrl_get_device_gpio_range(gpio, &pctldev, &range);
+	if (ret) {
+		if (pinctrl_ready_for_gpio_range(gpio))
+			ret = 0;
+		return ret;
+	}
+
+	mutex_lock(&pctldev->mutex);
+
+	/* Convert to the pin controllers number space */
+    /*进行gpio与pinctrl的转换*/
+	pin = gpio_to_pin(range, gpio);
+
+	ret = pinmux_request_gpio(pctldev, range, pin, gpio);
+
+	mutex_unlock(&pctldev->mutex);
+
+	return ret;
+}
+```
+
+### struct gpio_pin_range 
+
+```C
+/**
+ * struct gpio_pin_range - pin range controlled by a gpio chip
+ * @head: list for maintaining set of pin ranges, used internally
+ * @pctldev: pinctrl device which handles corresponding pins
+ * @range: actual range of pins controlled by a gpio controller
+ */
+
+struct gpio_pin_range {
+	struct list_head node;
+	struct pinctrl_dev *pctldev;
+	struct pinctrl_gpio_range range;
+};
+```
+
+### struct pinctrl_gpio_range
+
+```C
+/**
+ * struct pinctrl_gpio_range - each pin controller can provide subranges of
+ * the GPIO number space to be handled by the controller
+ * @node: list node for internal use
+ * @name: a name for the chip in this range
+ * @id: an ID number for the chip in this range
+ * @base: base offset of the GPIO range
+ * @pin_base: base pin number of the GPIO range if pins == NULL
+ * @pins: enumeration of pins in GPIO range or NULL
+ * @npins: number of pins in the GPIO range, including the base number
+ * @gc: an optional pointer to a gpio_chip
+ */
+struct pinctrl_gpio_range {
+	struct list_head node;
+	const char *name;
+	unsigned int id;
+	unsigned int base; /*gpio子系统的引脚编号*/
+	unsigned int pin_base; 
+	unsigned const *pins;
+	unsigned int npins;/*引脚个数*/
+	struct gpio_chip *gc;
+};
+```
+
+### 1-2-1-1 pinctrl_get_device_gpio_range()
+
+```C
+/*传入了gpio号*/
+/**
+ * pinctrl_get_device_gpio_range() - find device for GPIO range
+ * @gpio: the pin to locate the pin controller for
+ * @outdev: the pin control device if found
+ * @outrange: the GPIO range if found
+ *
+ * Find the pin controller handling a certain GPIO pin from the pinspace of
+ * the GPIO subsystem, return the device and the matching GPIO range. Returns
+ * -EPROBE_DEFER if the GPIO range could not be found in any device since it
+ * may still have not been registered.
+ */
+static int pinctrl_get_device_gpio_range(unsigned gpio,
+					 struct pinctrl_dev **outdev,
+					 struct pinctrl_gpio_range **outrange)
+{
+	struct pinctrl_dev *pctldev = NULL;
+
+	mutex_lock(&pinctrldev_list_mutex);
+
+	/* Loop over the pin controllers */
+    /*在全局list中匹配pinctrl_dev*/
+	list_for_each_entry(pctldev, &pinctrldev_list, node) {
+		struct pinctrl_gpio_range *range;
+        
+		/*在每个pinctrl_dev中，找到对应pinctrl号和gpio号的关系的 pinctrl_gpio_range结构 */
+		range = pinctrl_match_gpio_range(pctldev, gpio);
+		
+        /*找到了保存对应关系的range*/
+        if (range != NULL) {
+			*outdev = pctldev; /*对应的pinctrl_dev*/
+			*outrange = range; /*对应的range*/
+			mutex_unlock(&pinctrldev_list_mutex);
+			return 0;
+		}
+	}
+
+	mutex_unlock(&pinctrldev_list_mutex);
+
+	return -EPROBE_DEFER;
+}
+```
+
+### 1-2-1-1-1 pinctrl_match_gpio_range()
+
+```C
+struct pinctrl_dev {
+    ...
+	struct list_head gpio_ranges;
+    ...
+}
+
+
+/**
+ * pinctrl_match_gpio_range() - check if a certain GPIO pin is in range
+ * @pctldev: pin controller device to check
+ * @gpio: gpio pin to check taken from the global GPIO pin space
+ *
+ * Tries to match a GPIO pin number to the ranges handled by a certain pin
+ * controller, return the range or NULL
+ */
+static struct pinctrl_gpio_range *
+pinctrl_match_gpio_range(struct pinctrl_dev *pctldev, unsigned gpio)
+{
+	struct pinctrl_gpio_range *range = NULL;
+
+	mutex_lock(&pctldev->mutex);
+	/* Loop over the ranges */
+	list_for_each_entry(range, &pctldev->gpio_ranges, node) {
+		/* Check if we're in the valid range */
+        
+        /*
+         * 在probe中进行了计算， base = n * 32，
+         * 其中n代表gpion(第几组gpio)，
+         * 32代表一个gpio控制器有32个pin(当然跟soc相关)，
+         * imx6ull分gpio控制器都是32个引脚，有些没这么多。
+         * 匹配条件：range->base <= gpio号 <= range->base + range->npins
+         */
+		if (gpio >= range->base &&
+		    gpio < range->base + range->npins) {
+			mutex_unlock(&pctldev->mutex);
+			return range; /*匹配后，返回pinctrl_gpio_range*/
+		}
+	}
+	mutex_unlock(&pctldev->mutex);
+	return NULL;
+}
+```
+
+### 1-2-1-2 gpio_to_pin()
+
+```C
+/*
+ * 假设 gpio-ranges为：1 3 5，
+ * 5：共有5个引脚建立关系
+ * gpio引脚号       pinctrl的引脚号
+ *     1     对应        3
+ *     2     对应        4
+ *     3     对应        5
+ *     4     对应        6
+ *     5     对应        7
+ */
+
+
+/**
+ * gpio_to_pin() - GPIO range GPIO number to pin number translation
+ * @range: GPIO range used for the translation
+ * @gpio: gpio pin to translate to a pin number
+ *
+ * Finds the pin number for a given GPIO using the specified GPIO range
+ * as a base for translation. The distinction between linear GPIO ranges
+ * and pin list based GPIO ranges is managed correctly by this function.
+ *
+ * This function assumes the gpio is part of the specified GPIO range, use
+ * only after making sure this is the case (e.g. by calling it on the
+ * result of successful pinctrl_get_device_gpio_range calls)!
+ */
+static inline int gpio_to_pin(struct pinctrl_gpio_range *range,
+				unsigned int gpio)
+{
+    /* 此时传入的gpio为 range->base + gpio， 因此需要减回去 */
+	unsigned int offset = gpio - range->base; 
+	if (range->pins)
+		return range->pins[offset];/*枚举值，用于手动配置*/
+	else
+		return range->pin_base + offset; /* 找到pin_base开始的引脚号 */
+}
+```
+
+### 1-2-1-3 pinmux_request_gpio()
+
+```C
+/**
+ * pinmux_request_gpio() - request pinmuxing for a GPIO pin
+ * @pctldev: pin controller device affected
+ * @pin: the pin to mux in for GPIO
+ * @range: the applicable GPIO range
+ */
+int pinmux_request_gpio(struct pinctrl_dev *pctldev,
+			struct pinctrl_gpio_range *range,
+			unsigned pin, unsigned gpio)
+{
+	const char *owner;
+	int ret;
+
+	/* Conjure some name stating what chip and pin this is taken by */ 
+    /* 
+     * 在设备树中有个节点aliases，对应关系
+     * aliases {
+          gpio0 = &gpio1;
+	 *    gpio1 = &gpio2;
+	 *    gpio2 = &gpio3;
+	 *	...
+	 *  }
+	 * 如： 设置字符串为"gpio1:"
+     */
+	owner = kasprintf(GFP_KERNEL, "%s:%d", range->name, gpio);
+	if (!owner)
+		return -ENOMEM;
+
+    
+	ret = pin_request(pctldev, pin, owner, range);
+	if (ret < 0)
+		kfree(owner);
+
+	return ret;
+}
+```
+
+### 1-2-1-3-1 pin_request()
+
+```C
+/**
+ * pin_request() - request a single pin to be muxed in, typically for GPIO
+ * @pin: the pin number in the global pin space
+ * @owner: a representation of the owner of this pin; typically the device
+ *	name that controls its mux function, or the requested GPIO name
+ * @gpio_range: the range matching the GPIO pin if this is a request for a
+ *	single GPIO pin
+ */
+static int pin_request(struct pinctrl_dev *pctldev,
+		       int pin, const char *owner,
+		       struct pinctrl_gpio_range *gpio_range)
+{
+	struct pin_desc *desc;
+	const struct pinmux_ops *ops = pctldev->desc->pmxops;
+	int status = -EINVAL;
+
+    /*
+     * 传入的pin已转换成pinctrl对应的引脚编号
+     * 根据pin，在pctldev->pin_desc_tree中找对应的pin_desc
+     */
+	desc = pin_desc_get(pctldev, pin);
+	if (desc == NULL) {
+		dev_err(pctldev->dev,
+			"pin %d is not registered so it cannot be requested\n",
+			pin);
+		goto out;
+	}
+
+	dev_dbg(pctldev->dev, "request pin %d (%s) for %s\n",
+		pin, desc->name, owner);
+
+	if (gpio_range) {
+		/* There's no need to support multiple GPIO requests */
+		if (desc->gpio_owner) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->gpio_owner, owner);
+			goto out;
+		}
+		if (ops->strict && desc->mux_usecount &&
+		    strcmp(desc->mux_owner, owner)) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->mux_owner, owner);
+			goto out;
+		}
+
+		desc->gpio_owner = owner;
+	} else {
+		if (desc->mux_usecount && strcmp(desc->mux_owner, owner)) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->mux_owner, owner);
+			goto out;
+		}
+		if (ops->strict && desc->gpio_owner) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->gpio_owner, owner);
+			goto out;
+		}
+
+		desc->mux_usecount++;
+		if (desc->mux_usecount > 1)
+			return 0;
+
+		desc->mux_owner = owner;
+	}
+
+	/* Let each pin increase references to this module */
+	if (!try_module_get(pctldev->owner)) {
+		dev_err(pctldev->dev,
+			"could not increase module refcount for pin %d\n",
+			pin);
+		status = -EINVAL;
+		goto out_free_pin;
+	}
+
+	/*
+	 * If there is no kind of request function for the pin we just assume
+	 * we got it by default and proceed.
+	 */
+    /*优先执行gpio_request_enable，如果没有则执行request，如果还是没有则什么都不做*/
+	if (gpio_range && ops->gpio_request_enable)
+		/* This requests and enables a single GPIO pin */
+		status = ops->gpio_request_enable(pctldev, gpio_range, pin);
+	else if (ops->request)
+		status = ops->request(pctldev, pin);
+	else
+		status = 0;/*什么都不做*/
+
+	if (status) {
+		dev_err(pctldev->dev, "request() failed for pin %d\n", pin);
+		module_put(pctldev->owner);
+	}
+
+out_free_pin:
+	if (status) {
+		if (gpio_range) {
+			desc->gpio_owner = NULL;
+		} else {
+			desc->mux_usecount--;
+			if (!desc->mux_usecount)
+				desc->mux_owner = NULL;
+		}
+	}
+out:
+	if (status)
+		dev_err(pctldev->dev, "pin-%d (%s) status %d\n",
+			pin, owner, status);
+
+	return status;
+}
+```
+
+### 1-2-1-3-1-1 imx_pmx_gpio_request_enable()
+
+```C
+/*ops->gpio_request_enable*/
+
+static int imx_pmx_gpio_request_enable(struct pinctrl_dev *pctldev,
+			struct pinctrl_gpio_range *range, unsigned offset)
+{
+	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
+	const struct imx_pinctrl_soc_info *info = ipctl->info;
+	const struct imx_pin_reg *pin_reg;
+	struct imx_pin_group *grp;
+	struct imx_pin *imx_pin;
+	unsigned int pin, group;
+	u32 reg;
+
+	/* Currently implementation only for shared mux/conf register */
+	if (!(info->flags & SHARE_MUX_CONF_REG))
+		return 0;
+
+	pin_reg = &info->pin_regs[offset];
+	if (pin_reg->mux_reg == -1)
+		return -EINVAL;
+
+	/* Find the pinctrl config with GPIO mux mode for the requested pin */
+	for (group = 0; group < info->ngroups; group++) {
+		grp = &info->groups[group];
+		for (pin = 0; pin < grp->npins; pin++) {
+			imx_pin = &grp->pins[pin];
+			if (imx_pin->pin == offset && !imx_pin->mux_mode)
+				goto mux_pin; /*找到匹配相等的pin号，并确认其mux_mode为空*/
+		}
+	}
+
+	return -EINVAL;
+
+mux_pin:
+    /*读寄存器的值*/
+	reg = readl(ipctl->base + pin_reg->mux_reg);
+	reg &= ~(0x7 << 20);
+	reg |= imx_pin->config;
+    /*复用为gpio模式*/
+	writel(reg, ipctl->base + pin_reg->mux_reg);
+
+	return 0;
+}
+```
 
 ### 1-2-2 gpiod_get_direction()
 
@@ -599,7 +1040,7 @@ int gpiod_get_direction(struct gpio_desc *desc)
     
     /* 
      * return desc - &desc->gdev->descs[0]; 
-     * 返回偏移位置，类型为
+     * 返回数组的偏移位置，第几个desc
      */
 	offset = gpio_chip_hwgpio(desc);
 
@@ -620,12 +1061,6 @@ int gpiod_get_direction(struct gpio_desc *desc)
 	return status;
 }
 ```
-
-
-
-
-
-
 
 ### 1-3 gpiod_configure_flags()
 
@@ -663,11 +1098,151 @@ static int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
 	}
 
 	/* Process flags */
+    /*执行chip的处理函数*/
 	if (dflags & GPIOD_FLAGS_BIT_DIR_OUT)
+        /*设置方向为输出，并设置gpio输出的值*/
 		status = gpiod_direction_output(desc,
 					      dflags & GPIOD_FLAGS_BIT_DIR_VAL);
 	else
-		status = gpiod_direction_input(desc);
+		status = gpiod_direction_input(desc);/*设置方向为输入*/
 
 	return status;
 }
+
+```
+
+### 1-3-1 gpiod_direction_output()
+
+```C
+/**
+ * gpiod_direction_output - set the GPIO direction to output
+ * @desc:	GPIO to set to output
+ * @value:	initial output value of the GPIO
+ *
+ * Set the direction of the passed GPIO to output, such as gpiod_set_value() can
+ * be called safely on it. The initial value of the output must be specified
+ * as the logical value of the GPIO, i.e. taking its ACTIVE_LOW status into
+ * account.
+ *
+ * Return 0 in case of success, else an error code.
+ */
+int gpiod_direction_output(struct gpio_desc *desc, int value)
+{
+	VALIDATE_DESC(desc);
+    /*当flag为"FLAG_ACTIVE_LOW",物理值和逻辑值是反向的*/
+	if (test_bit(FLAG_ACTIVE_LOW, &desc->flags))
+		value = !value;
+	return _gpiod_direction_output_raw(desc, value);
+}
+
+
+/*
+ * open drain：开漏
+ * open source：推挽
+ */
+static int _gpiod_direction_output_raw(struct gpio_desc *desc, int value)
+{
+	struct gpio_chip *gc = desc->gdev->chip;
+	int ret;
+
+	/* GPIOs used for IRQs shall not be set as output */
+    /*不能同时为irq和输出，只能二选一*/
+	if (test_bit(FLAG_USED_AS_IRQ, &desc->flags)) {
+		gpiod_err(desc,
+			  "%s: tried to set a GPIO tied to an IRQ as output\n",
+			  __func__);
+		return -EIO;
+	}
+
+	if (test_bit(FLAG_OPEN_DRAIN, &desc->flags)) { /*开漏*/
+		/* First see if we can enable open drain in hardware */
+		if (gc->set_single_ended) {
+			ret = gc->set_single_ended(gc, gpio_chip_hwgpio(desc),
+						   LINE_MODE_OPEN_DRAIN);
+			if (!ret)
+				goto set_output_value;
+		}
+		/* Emulate open drain by not actively driving the line high */
+		if (value)
+			return gpiod_direction_input(desc);
+	}
+	else if (test_bit(FLAG_OPEN_SOURCE, &desc->flags)) { /*推挽*/
+		if (gc->set_single_ended) {
+			ret = gc->set_single_ended(gc, gpio_chip_hwgpio(desc),
+						   LINE_MODE_OPEN_SOURCE);
+			if (!ret)
+				goto set_output_value;
+		}
+		/* Emulate open source by not actively driving the line low */
+		if (!value)
+			return gpiod_direction_input(desc);
+	} else {
+		/* Make sure to disable open drain/source hardware, if any */
+		if (gc->set_single_ended)
+			gc->set_single_ended(gc,
+					     gpio_chip_hwgpio(desc),
+					     LINE_MODE_PUSH_PULL);
+	}
+
+set_output_value:
+	if (!gc->set || !gc->direction_output) {
+		gpiod_warn(desc,
+		       "%s: missing set() or direction_output() operations\n",
+		       __func__);
+		return -EIO;
+	}
+	/*用户自定函数*/
+	ret = gc->direction_output(gc, gpio_chip_hwgpio(desc), value);
+	if (!ret)
+		set_bit(FLAG_IS_OUT, &desc->flags);
+	trace_gpio_value(desc_to_gpio(desc), 0, value);
+	trace_gpio_direction(desc_to_gpio(desc), 0, ret);
+	return ret;
+}
+```
+
+### 1-3-2 gpiod_direction_input()
+
+```C
+/**
+ * gpiod_direction_input - set the GPIO direction to input
+ * @desc:	GPIO to set to input
+ *
+ * Set the direction of the passed GPIO to input, such as gpiod_get_value() can
+ * be called safely on it.
+ *
+ * Return 0 in case of success, else an error code.
+ */
+int gpiod_direction_input(struct gpio_desc *desc)
+{
+	struct gpio_chip	*chip;
+	int			status = -EINVAL;
+
+	VALIDATE_DESC(desc);
+	chip = desc->gdev->chip;
+
+    /*没有配置direction_input函数*/
+	if (!chip->get || !chip->direction_input) {
+		gpiod_warn(desc,
+			"%s: missing get() or direction_input() operations\n",
+			__func__);
+		return -EIO;
+	}
+
+    /*用户自定，设置为输入*/
+	status = chip->direction_input(chip, gpio_chip_hwgpio(desc));
+	if (status == 0)
+		clear_bit(FLAG_IS_OUT, &desc->flags);
+
+	trace_gpio_direction(desc_to_gpio(desc), 1, status);
+
+	return status;
+}
+```
+
+
+
+### 总结
+
+- 当使用gpiod_get时，为consumer，则
+

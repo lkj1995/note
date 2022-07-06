@@ -1,7 +1,8 @@
-- 在/dev/中创建一个设备文件，并初始化文件的inode
-- 主要做的事
+### init_special_inode()
 
 ```c
+/*在/dev/中创建一个设备文件，并初始化文件的inode*/
+
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
         inode->i_mode = mode;
@@ -23,49 +24,15 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 EXPORT_SYMBOL(init_special_inode);
 ```
 
+### 1 chrdev_open()
+
 ```C
  const struct file_operations def_chr_fops = {
          .open = chrdev_open,
          .llseek = noop_llseek,
  };
-```
-#### 当用户空间执行open的时候，主要做了如下操作
-- 首先，创建了对应的dev/xxx ，即创建了一个inode
-
-- 根据参数，记录dev_t设备号
-
-- 因class为字符类，f_op指向def_chr_fops的通用操作
-
-- cdev默认为空，为后续open作记录填充
-
-  
-
-- 用户进程调用open(dev/xxx)，获取了一个inode
-
-- 获取inode的cdev
-
-- 如果是第一次打开，cdev为空
-
-  - 则会进入通用的字符open函数处理
-  - 根据设备号在cdev_map（kobj_map）中寻找符合的kobj
-  - 然后再用container_of获取cdev
-  - 上自旋锁，再检查inode->cdev指针，是否有其他用户在此过程操作了open
-    - 如果没有人操作，则inode->cdev记录找到的cdev
-  
-- 如果是多次打开
-
-  - 则可以直接调用open
-
-- 解除自旋锁，调用cdev_put，减少kobj引用次数
-
-- inode->cdev复制给file->cdev
-
-- 判断open函数不为空，则执行驱动实际的open操作
-
-- 结束操作
 
 
-```C
 /*
  * Called every time a character special file is opened
  */
@@ -76,26 +43,40 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 	struct cdev *new = NULL;
 	int ret = 0;
 
-	spin_lock(&cdev_lock);/*上锁*/
-	p = inode->i_cdev; /*获取cdev，此时cdev是为空的，因为inode还没记录到*/
+	spin_lock(&cdev_lock);
+    
+    /*第一次inode未记录，cdev是为空*/
+	p = inode->i_cdev; 
 	if (!p) {
 		struct kobject *kobj;
 		int idx;
 		spin_unlock(&cdev_lock);
-		kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);/*通过设备号寻找对应的kobj*/
+        
+        /*通过设备号寻找对应的kobj*/
+		kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);
+        
 		if (!kobj)
 			return -ENXIO;
-		new = container_of(kobj, struct cdev, kobj);/*根据kobj找回结构体cdev*/
+        
+        /*根据kobj找到cdev*/
+		new = container_of(kobj, struct cdev, kobj);
 		spin_lock(&cdev_lock);
+        
 		/* Check i_cdev again in case somebody beat us to it while
 		   we dropped the lock. */
-		p = inode->i_cdev;/*防止解锁时，其他竞争者操作了它，如open，此时可能cdev已经被记录了*/
-		if (!p) { /*无竞争者，记录找到的cdev*/
+        /*防止解锁时，其他竞争者操作它，如open，此时可能cdev已经被记录了*/
+		p = inode->i_cdev;
+        
+        
+        /*无竞争者，记录找到的cdev*/
+		if (!p) { 
 			inode->i_cdev = p = new;
+            
              /*把cdev加入inode链表，是不是代表着还会有其他cdev共用一个inode?*/
 			list_add(&inode->i_devices, &p->list);
 			new = NULL;
-		} else if (!cdev_get(p)) /*有竞争者，不知道啥意思。。*/
+            
+		} else if (!cdev_get(p))
 			ret = -ENXIO;
 	} else if (!cdev_get(p))
 		ret = -ENXIO;
@@ -105,13 +86,18 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 		return ret;
 
 	ret = -ENXIO;
-	fops = fops_get(p->ops); /*获取cdev的ops*/
+    
+    /*获取cdev的ops*/
+	fops = fops_get(p->ops);
 	if (!fops)
 		goto out_cdev_put;
-
-	replace_fops(filp, fops);/*保存到file*/
+    
+	/*保存到file，方便接下来使用*/
+	replace_fops(filp, fops);
 	if (filp->f_op->open) {
-		ret = filp->f_op->open(inode, filp); /*调用驱动开发者编写的open函数*/
+        
+        /*实际调用用户的open函数*/
+		ret = filp->f_op->open(inode, filp); 
 		if (ret)
 			goto out_cdev_put;
 	}
@@ -124,6 +110,8 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 }
 ```
 
+### 1-1 kobj_lookup()
+
 ```C
 struct kobject *kobj_lookup(struct kobj_map *domain, dev_t dev, int *index)
 {
@@ -132,13 +120,15 @@ struct kobject *kobj_lookup(struct kobj_map *domain, dev_t dev, int *index)
 	unsigned long best = ~0UL;
 
 retry:
-	mutex_lock(domain->lock);/*上锁*/
+	mutex_lock(domain->lock);
 	for (p = domain->probes[MAJOR(dev) % 255]; p; p = p->next) {
-		struct kobject *(*probe)(dev_t, int *, void *); /*probe指针*/
-		struct module *owner;  
-		void *data; /*cdev指针*/
-
-		if (p->dev > dev || p->dev + p->range - 1 < dev) /*dev大于当前要找的，继续遍历*/
+		struct kobject *(*probe)(dev_t, int *, void *);
+		struct module *owner; 
+        /*cdev指针*/
+		void *data; 
+        
+		/*dev大于当前要找的，继续遍历*/
+		if (p->dev > dev || p->dev + p->range - 1 < dev) 
 			continue;
 		if (p->range - 1 >= best)
 			break;
@@ -166,3 +156,12 @@ retry:
 }
 ```
 
+### 总结
+
+- 用户空间执行open，创建了一个inode。
+- 因class为字符设备，f_op选择了字符类型的def_chr_fops
+- 先进入通用的chrdev_open进行处理
+- 如果第一次打开，则根据设备号找到cdev，并记录在inode。
+- 如果已经打开过，直接使用。
+- inode提供全局的进程使用，file则是当前进程使用。
+- 最终执行用户的open函数。

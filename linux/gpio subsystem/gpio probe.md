@@ -1208,6 +1208,24 @@ int of_gpio_simple_xlate(struct gpio_chip *gc,
 ### 1-2-1-2-2 of_gpiochip_add_pin_range()
 
 ```C
+/*
+ * 由此得出一个结论，pinctrl子系统中，存在多个pinctrl_dev。
+ * 在 imx6ul-evk 节点里，多少个子节点就多少个pinctrl_dev，如下就有两个。
+ * pinctrl_flexcan1: flexcan1grp{
+ *     fsl,pins = <
+ *              MX6UL_PAD_UART3_CTS_B__FLEXCAN1_TX         0x000010B0
+ *              MX6UL_PAD_UART3_RTS_B__FLEXCAN1_RX         0x000010B0
+ *      >;
+ * };
+ * 
+ * pinctrl_i2c1: i2c1grp {
+ *     fsl,pins = <
+ *              MX6UL_PAD_UART4_TX_DATA__I2C1_SCL 0x4001b8b0
+ *              MX6UL_PAD_UART4_RX_DATA__I2C1_SDA 0x4001b8b0
+ *     >;
+ * }; 
+ */
+
 static int of_gpiochip_add_pin_range(struct gpio_chip *chip)
 {
 	struct device_node *np = chip->of_node;
@@ -1225,21 +1243,28 @@ static int of_gpiochip_add_pin_range(struct gpio_chip *chip)
 	group_names = of_find_property(np, group_names_propname, NULL);
 
 	for (;; index++) {
+        
+        /*
+         * 寻找当前node的"gpio-ranges"属性
+         * 并把参数保存在pinspec，其中参数为3个
+         */
 		ret = of_parse_phandle_with_fixed_args(np, "gpio-ranges", 3,
 				index, &pinspec);
 		if (ret)
 			break;
         
 		/* 
-		 * 根据gpio-ranges的第1个参数找到pctldev，即 phandle
+		 * 根据gpio-ranges的第1个参数 pinctrlA
 		 * gpio-ranges = <&pinctrlA 0 128 12>;
+		 * 在全局list中，pctldev->dev->of_node == pinspec.np
+		 * 找到匹配的pinctrl_dev。
 		 */
 		pctldev = of_pinctrl_get(pinspec.np);
 		of_node_put(pinspec.np);
 		if (!pctldev)
 			return -EPROBE_DEFER;
 
-		if (pinspec.args[2]) {
+		if (pinspec.args[2]) { /* [2] 保存了转换的pin数量 */
 			if (group_names) {
 				of_property_read_string_index(np,
 						group_names_propname,
@@ -1418,6 +1443,7 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
 	struct gpio_device *gdev = chip->gpiodev;
 	int ret;
 
+    /*申请了 gpio_pin_range 结构内存 */
 	pin_range = kzalloc(sizeof(*pin_range), GFP_KERNEL);
 	if (!pin_range) {
 		chip_err(chip, "failed to allocate pin ranges\n");
@@ -1428,8 +1454,20 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
 	pin_range->range.id = gpio_offset;
 	pin_range->range.gc = chip;
 	pin_range->range.name = chip->label;
-	pin_range->range.base = gdev->base + gpio_offset;
+    
+    /*
+     * gdev->base：某个gpio控制器的偏移，
+     *    如gpio4，base = 4 * 32 = 128
+     * gpio_offset：gpio子系统的引脚编号。
+     * gdev->base + gpio_offset：
+     *    代表了gpio子系统的引脚编号对应pinctrl引脚编号的关系。
+     */
+	pin_range->range.base = gdev->base + gpio_offset; 
+    
+    /*pinctrl子系统的起始编号*/
 	pin_range->range.pin_base = pin_offset;
+    
+    /*要转换的引脚数量*/
 	pin_range->range.npins = npins;
 	pin_range->pctldev = pinctrl_find_and_add_gpio_range(pinctl_name,
 			&pin_range->range);
@@ -1444,6 +1482,7 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
 		 pinctl_name,
 		 pin_offset, pin_offset + npins - 1);
 
+    /* 将gpio_pin_range 保存到gpiodev的list中 */
 	list_add_tail(&pin_range->node, &gdev->pin_ranges);
 
 	return 0;
