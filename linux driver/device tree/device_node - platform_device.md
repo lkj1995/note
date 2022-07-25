@@ -34,7 +34,7 @@ struct pdev_archdata {
 
 ### omap_device
 
-```
+```c
 struct omap_device {
         struct platform_device          *pdev;
         struct omap_hwmod               **hwmods;
@@ -44,8 +44,6 @@ struct omap_device {
         u8                              flags;
 };
 ```
-
-
 
 ### of_platform_default_populate_init
 
@@ -62,7 +60,6 @@ arch_initcall_sync(of_platform_default_populate_init);
 /* 
  * 把该函数地址放入了 .initcall3s.init 段中
  * 在start_kernel中，会进入此段，将段中的函数按顺序全部进行调用
- * 疑问：怎么知道这个段在哪
  */
 
 static int __init of_platform_default_populate_init(void)
@@ -769,7 +766,8 @@ struct platform_device *of_device_alloc(struct device_node *np,
     /*计算所需resources的数量*/
 	while (of_address_to_resource(np, num_reg, &temp_res) == 0)
 		num_reg++;
-    /*统计其中有多少个IRQ*/
+    
+    /*计算该node中断数量*/
 	num_irq = of_irq_count(np);
 
 	/* Populate the resource table */

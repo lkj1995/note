@@ -87,7 +87,7 @@ struct driver_private {
 };
 ```
 
-### driver_register
+### 1 driver_register
 
 ```c
 /**
@@ -140,7 +140,7 @@ int driver_register(struct device_driver *drv)
 }
 ```
 
-### driver_find
+### 1-1 driver_find
 
 ```C
 /**
@@ -171,7 +171,7 @@ struct device_driver *driver_find(const char *name, struct bus_type *bus)
 }
 ```
 
-### bus_add_driver
+### 1-2 bus_add_driver
 
 ```C
 /**
@@ -184,7 +184,8 @@ int bus_add_driver(struct device_driver *drv)
 	struct driver_private *priv;
 	int error = 0;
 
-	bus = bus_get(drv->bus); /*获取需挂载的bus，已经在驱动开发指定好*/
+    /*获取需挂载的bus*/
+	bus = bus_get(drv->bus); 
 	if (!bus)
 		return -EINVAL;
 
@@ -196,9 +197,10 @@ int bus_add_driver(struct device_driver *drv)
 		error = -ENOMEM;
 		goto out_put_bus;
 	}
+    /*记录及初始化*/
 	klist_init(&priv->klist_devices, NULL, NULL);
-	priv->driver = drv;/*互相记录*/
-	drv->p = priv;/*互相记录*/
+	priv->driver = drv;
+	drv->p = priv;
 	priv->kobj.kset = bus->p->drivers_kset; /*父kset*/ 
     
     /*创建节点，ktype为通用driver_ktype*/
