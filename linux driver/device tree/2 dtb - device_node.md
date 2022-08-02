@@ -1,20 +1,42 @@
 ![img](./img/dtb_structure_block.jpg "dtb_structure_block")
 
-### device_node
+### struct device_node
 
 ```C
-struct device_node {
-	const char *name;/*如果改node存在name属性，该指针指向其内容，否则设置为"<NULL>"*/
-   
-	phandle phandle; /*ID句柄*/
-	const char *full_name; /*节点的名字*/
-	struct fwnode_handle fwnode;    /*fwnode的ops*/
+struct of_irq_controller {
+	unsigned int (*irq_build)(struct device_node *, 
+                                unsigned int, void *);
+	void  *data;
+};
 
-	struct	property *properties;/*node的属性列表*/
-	struct	property *deadprops;	/* removed properties */
-	struct	device_node *parent;/*父node*/
-	struct	device_node *child;/*子node*/
-	struct	device_node *sibling;/*兄弟node*/
+
+struct device_node {
+	/*如果改node存在name属性，该指针指向其内容，否则设置为"<NULL>"*/
+    const char *name;
+    
+    /*ID句柄*/
+	phandle phandle;
+    
+    /*节点的名字*/
+	const char *full_name; 
+    
+    /*fwnode的ops*/
+	struct fwnode_handle fwnode;    
+    
+    /*node的属性列表*/
+	struct	property *properties;
+    
+    /* removed properties */
+	struct	property *deadprops;	
+    
+    /*父node*/
+	struct	device_node *parent;
+    
+    /*子node*/
+	struct	device_node *child;
+    
+    /*兄弟node*/
+	struct	device_node *sibling;
 #if defined(CONFIG_OF_KOBJ)
 	struct	kobject kobj;
 #endif
@@ -27,7 +49,7 @@ struct device_node {
 };
 ```
 
-### property
+### struct property
 
 ```C
 struct property {
@@ -47,18 +69,20 @@ struct property {
 };
 ```
 
-### fdt_node_header(dtb中的node)
+### struct fdt_node_header
 
 ```C
+/* dtb中的node */
 struct fdt_node_header {
         fdt32_t tag;
         char name[0];
 };
 ```
 
-### fdt_property(dtb中的property)
+### struct fdt_property
 
 ```C
+/* dtb中的property */
 struct fdt_property {
         fdt32_t tag;
         fdt32_t len;
@@ -67,7 +91,7 @@ struct fdt_property {
 };
 ```
 
-### TAG
+### 1 unflatten_device_tree
 
 ```C
 #define FDT_BEGIN_NODE	0x1		/* Start node: full name */
@@ -75,14 +99,10 @@ struct fdt_property {
 #define FDT_PROP	    0x3		/* Property: name off,size,content */  
 #define FDT_NOP		    0x4		/* nop */
 #define FDT_END		    0x9     /*整个structure block的结束*/
-```
 
-### unflatten_device_tree
-
-```C
-/**
+/*
  * unflatten_device_tree - create tree of device_nodes from flat blob
- * 将flat的dtb转换成有依赖关系的设备树
+ * 将扁平的node转换成有层次结构的deivce_node
  * unflattens the device-tree passed by the firmware, creating the
  * tree of struct device_node. It also fills the "name" and "type"
  * pointers of the nodes so the normal device-tree walking functions
@@ -93,33 +113,17 @@ void __init unflatten_device_tree(void)
 	__unflatten_device_tree(initial_boot_params, NULL, &of_root,
 				early_init_dt_alloc_memory_arch, false);
 
-	/* Get pointer to "/chosen" and "/aliases" nodes for use everywhere */
+	/* Get pointer to "/chosen" and "/aliases" nodes for use everywhere */     /*提取chosen和aliases节点，方便 use everywhere */
 	of_alias_scan(early_init_dt_alloc_memory_arch);
 
 	unittest_unflatten_overlay_base();
-}
+} 
 ```
 
-### __unflatten_device_tree
+### 1-1 __unflatten_device_tree
 
 ```C
-/**
- * __unflatten_device_tree - create tree of device_nodes from flat blob
- * 根据dtb生成嵌套的device_nodes节点
- * unflattens a device-tree, creating the
- * tree of struct device_node. It also fills the "name" and "type"
- * pointers of the nodes so the normal device-tree walking functions
- * can be used.
- * @blob: The blob to expand
- * @dad: Parent device node
- * @mynodes: The device_node tree created by the call
- * @dt_alloc: An allocator that provides a virtual address to memory
- * for the resulting tree
- * @detached: if true set OF_DETACHED on @mynodes
- *
- * Returns NULL on failure or the memory chunk containing the unflattened
- * device tree on success.
- */
+/* 根据dtb生成嵌套的device_nodes节点 */
 void *__unflatten_device_tree(const void *blob,
 			      struct device_node *dad,
 			      struct device_node **mynodes,
@@ -129,72 +133,39 @@ void *__unflatten_device_tree(const void *blob,
 	int size;
 	void *mem;
 
-	pr_debug(" -> unflatten_device_tree()\n");
-
-	if (!blob) {
-		pr_debug("No device tree pointer\n");
-		return NULL;
-	}
-
-	pr_debug("Unflattening device tree:\n");
-	pr_debug("magic: %08x\n", fdt_magic(blob));
-	pr_debug("size: %08x\n", fdt_totalsize(blob));
-	pr_debug("version: %08x\n", fdt_version(blob));
-
-	if (fdt_check_header(blob)) { /*magic.size,bounds检查*/
-		pr_err("Invalid device tree blob header\n");
-		return NULL;
-	}
-
-	/* First pass, scan for size */
     /*
-     * 第一遍扫描，计算dtb的structure block数量和其名字长度大小，总内存大小
-     * 由此可知，device_node后面紧接着node的字符串名字
+     * 1. 第一遍扫描，计算dtb的structure block数量和
+     *    其名字长度大小，总内存大小。
+     * 2. 由此可知，device_node后面紧接着node的字符串
+     *    名字，存放在连续的内存中。
      */
 	size = unflatten_dt_nodes(blob, NULL, dad, NULL);
-	if (size < 0)
-		return NULL;
-    
-    /*
-     * #define ALIGN(x, a)           __ALIGN_KERNEL((x), (a))
-     * #define __ALIGN_KERNEL(x, a)  __ALIGN_KERNEL_MASK(x, (typeof(x))(a) - 1)
-     * #define __ALIGN_KERNEL_MASK(x, mask)  (((x) + (mask)) & ~(mask))
-     * 字节对齐，如不足则补全
-     */
+ 
+     /* 字节对齐，不足则填充 */
 	size = ALIGN(size, 4);
-	pr_debug("  size is %d, allocating...\n", size);
-
+   
 	/* Allocate memory for the expanded device tree */
-    /*分配所需的内存，其中4是magic的大小，放在最后，其中需对齐的大小为struct device_node*/
+    /* 
+     * 1. 分配内存，其中 + 4 为magic的大小，放于末尾。
+     * 2. 其中需对齐的大小为struct device_node
+     */
 	mem = dt_alloc(size + 4, __alignof__(struct device_node));
 	if (!mem)
 		return NULL;
     
-    /*清0*/
-	memset(mem, 0, size);
-    /*最后的4字节用作magic，进行大小端转换并保存*/
+    /*最后4字节用作magic*/
 	*(__be32 *)(mem + size) = cpu_to_be32(0xdeadbeef);
 
-	pr_debug("  unflattening %p...\n", mem);
 
 	/* Second pass, do actual unflattening */
-    /*传入已经申请的mem，进行设备树的展开*/
+    /* 传入已经申请的内存mem，展开设备树 */
 	unflatten_dt_nodes(blob, mem, dad, mynodes);
-	if (be32_to_cpup(mem + size) != 0xdeadbeef)/*检查magic是否被写覆盖*/
-		pr_warn("End of tree marker overwritten: %08x\n",
-			be32_to_cpup(mem + size));
-
-	if (detached && mynodes) {/*传入了false，不进行追踪*/
-		of_node_set_flag(*mynodes, OF_DETACHED);
-		pr_debug("unflattened tree is detached\n");
-	}
-
-	pr_debug(" <- unflatten_device_tree()\n");
+    
 	return mem;
 }
 ```
 
-### unflatten_dt_nodes
+### 1-1-1 unflatten_dt_nodes
 
 ```C
 /**
@@ -216,7 +187,9 @@ static int unflatten_dt_nodes(const void *blob,
 {
 	struct device_node *root;
 	int offset = 0, depth = 0, initial_depth = 0;
-#define FDT_MAX_DEPTH	64 /*每个节点的子节点，最深64个*/
+    
+/*节点的子节点，最大深度64*/    
+#define FDT_MAX_DEPTH	64 
 	struct device_node *nps[FDT_MAX_DEPTH];
 	void *base = mem;
 	bool dryrun = !base;
@@ -237,30 +210,29 @@ static int unflatten_dt_nodes(const void *blob,
 	root = dad;
 	nps[depth] = dad;
 
- 
+    
+ 	/* 当遍历完所有node后，depth为0，退出循环 */
 	for (offset = 0;
-	     offset >= 0 && depth >= initial_depth;/*当遍历完所有node后，depth为0，退出循环*/
+	     offset >= 0 && depth >= initial_depth;
 	     offset = fdt_next_node(blob, offset, &depth)) {
+        
+        /* 如果深度大于64， 忽略该node及其子node */
 		if (WARN_ON_ONCE(depth >= FDT_MAX_DEPTH))
-			continue;
-
-		if (!IS_ENABLED(CONFIG_OF_KOBJ) && /*为ture，不成立*/
-		    !of_fdt_device_is_available(blob, offset))
 			continue;
         
         /*
-         * 计算每一个device_node+该node的名字长度
-         * 如dryrun为0，则会对mem的device_node和name进行初始化
-         * 否则，只进行内存大小的统计
+         * 计算每个 device_node + 该node名字长度
+         * dryrun = 0，实际初始化 device_nodee
+         * dryrun = 1，只进行内存大小的统计
          */
 		if (!populate_node(blob, offset, &mem, nps[depth],
 				   &nps[depth+1], dryrun))
 			return mem - base;
 
         /*
-         * 第二次，传入的nodepp为of_root
-         * 此时of_root为空，将初始化的第一个device_node
-         * 赋予给of_root作为起始节点
+         * 第二次，传入的nodepp为of_root，
+         * of_root为全局指针，为空时，初始化的第一个
+         * device_node赋给of_root作为起始节点
          */
 		if (!dryrun && nodepp && !*nodepp)
 			*nodepp = nps[depth+1];
@@ -268,24 +240,12 @@ static int unflatten_dt_nodes(const void *blob,
 			root = nps[depth+1];
 	}
 
-	if (offset < 0 && offset != -FDT_ERR_NOTFOUND) {
-		pr_err("Error %d processing FDT\n", offset);
-		return -EINVAL;
-	}
-
-	/*
-	 * Reverse the child list. Some drivers assumes node order matches .dts
-	 * node order
-	 */
-	if (!dryrun) /*反转链表，意义在哪*/
-		reverse_nodes(root);
-
 	return mem - base;
 }
 ```
 
 
-### populate_node
+### 1-1-1-1 populate_node
 
 ```C
 static bool populate_node(const void *blob,
@@ -298,7 +258,8 @@ static bool populate_node(const void *blob,
 	struct device_node *np;
 	const char *pathp;
 	unsigned int l, allocl;
-    /*获取到offset偏移的节点的名字，并返回其字符串长度l*/
+    
+    /*获取offset偏移大小的节点名pathp，和长度l*/
 	pathp = fdt_get_name(blob, offset, &l);
 	if (!pathp) {
 		*pnp = NULL;
@@ -308,11 +269,11 @@ static bool populate_node(const void *blob,
 	allocl = ++l; /*加上'\0'*/
 
     /*
-     * unflatten_dt_alloc只是做了所需申请内存统计，并没有真的申请
-     * mem是二级指针，mem实际就是size，累计内存大小
-     * size = sizeof(struct device_node) + allocl;
-     * np = mem;
-     * mem += size;
+     * 1. 只是做了所需申请内存统计
+     * 2. mem是二级指针，mem实际就是size，累计内存大小
+     * 3. size = sizeof(struct device_node) + allocl;
+     *    np = mem;
+     *    mem += size;
      */
 	np = unflatten_dt_alloc(mem, sizeof(struct device_node) + allocl,
 				__alignof__(struct device_node));
@@ -322,10 +283,13 @@ static bool populate_node(const void *blob,
      * 根据上个调用的函数unflatten_dt_nodes
      * 第二次时，已经申请了mem，此时np则会持续往下，定位到每个node
      * 对每个node进行结构内容进行初始化
+     * !dryrun，则需要做实际操作
      */    
-	if (!dryrun) { /*顾名思义，!dryrun，则需要做实际操作*/
+	if (!dryrun) {
 		char *fn;
-		of_node_init(np);/*设置通用ops，ktype*/
+        
+        /*设置通用fops，ktype*/
+		of_node_init(np);
         
         /* 
          * 申请的内存，数据放置格式为 ：device_node在前，string在后
@@ -334,29 +298,39 @@ static bool populate_node(const void *blob,
          */
 		np->full_name = fn = ((char *)np) + sizeof(*np);
         
-		memcpy(fn, pathp, l);/*并复制node的名字到string位置*/
+        /*并复制node的名字到string位置*/
+		memcpy(fn, pathp, l);
 
-		if (dad != NULL) { /*记录兄弟，父，子*/
+        /*记录兄弟，父，子*/
+		if (dad != NULL) { 
 			np->parent = dad;
 			np->sibling = dad->child;
 			dad->child = np;
 		}
 	}
 
+    /*属性解析*/
 	populate_properties(blob, offset, mem, np, pathp, dryrun);
+    
 	if (!dryrun) {
+        
         /*找到name属性内容，赋给property->name*/
 		np->name = of_get_property(np, "name", NULL);
+        
+        /*找不到name属性，property->name设置为<NULL>*/
 		if (!np->name)
-			np->name = "<NULL>"; /*找不到name属性，property->name设置为<NULL>*/
+			np->name = "<NULL>"; 
 	}
-
-	*pnp = np;/*返回刚刚初始化完成的device_node*/
-	return true; /*只要节点没遍历完，就会一直返回ture*/
+    
+	/*返回刚刚初始化完成的device_node*/
+	*pnp = np;
+    
+    /*只要节点没遍历完，就会一直返回ture*/
+	return true; 
 }
 ```
 
-### fdt_get_name
+### 1-1-1-1-1 fdt_get_name
 
 ```C
 const char *fdt_get_name(const void *fdt, int nodeoffset, int *len)
@@ -366,36 +340,26 @@ const char *fdt_get_name(const void *fdt, int nodeoffset, int *len)
 	const char *nameptr;
 	int err;
 
-	if (((err = fdt_ro_probe_(fdt)) < 0)
-	    || ((err = fdt_check_node_offset_(fdt, nodeoffset)) < 0))
-			goto fail;
 
 	nameptr = nh->name;
+    
     /*旧版本命名前缀带有'/'*/
 	if (!can_assume(LATEST) && fdt_version(fdt) < 0x10) {
-		/*
-		 * For old FDT versions, match the naming conventions of V16:
-		 * give only the leaf name (after all /). The actual tree
-		 * contents are loosely checked.
-		 */
 		const char *leaf;
-		leaf = strrchr(nameptr, '/');/*找到最后一次出现'/'的地方*/
-		if (leaf == NULL) {
-			err = -FDT_ERR_BADSTRUCTURE;
-			goto fail;
-		}
-		nameptr = leaf+1;  /*偏移1*/
+        
+        /*找到最后一次出现'/'的地方*/
+		leaf = strrchr(nameptr, '/');
+        
+        /*偏移1*/
+		nameptr = leaf+1;  
 	}
-
+    
+    
+	/*名字最后带'/0'，可直接计算长度*/
 	if (len)
-		*len = strlen(nameptr); /*名字最后带'/0'，可以计算出长度*/
+		*len = strlen(nameptr); 
 
 	return nameptr;
-
- fail:
-	if (len)
-		*len = err;
-	return NULL;
 }
 ```
 
@@ -480,8 +444,9 @@ int fdt_check_node_offset_(const void *fdt, int offset)
 	if (!can_assume(VALID_INPUT)
 	    && ((offset < 0) || (offset % FDT_TAGSIZE)))
 		return -FDT_ERR_BADOFFSET;
-
-	if (fdt_next_tag(fdt, offset, &offset) != FDT_BEGIN_NODE) /*符合FDT_BEGIN_NODE*/
+    
+	/*符合FDT_BEGIN_NODE*/
+	if (fdt_next_tag(fdt, offset, &offset) != FDT_BEGIN_NODE) 
 		return -FDT_ERR_BADOFFSET;
 
 	return offset;/*返回了下一个node*/
@@ -625,39 +590,6 @@ static inline void of_node_init(struct device_node *node)
 }
 ```
 
-### of_fwnode_ops
-
-```C
-const struct fwnode_operations of_fwnode_ops = {
-	.get = of_fwnode_get,
-	.put = of_fwnode_put,
-	.device_is_available = of_fwnode_device_is_available,
-	.device_get_match_data = of_fwnode_device_get_match_data,
-	.property_present = of_fwnode_property_present,
-	.property_read_int_array = of_fwnode_property_read_int_array,
-	.property_read_string_array = of_fwnode_property_read_string_array,
-	.get_name = of_fwnode_get_name,
-	.get_name_prefix = of_fwnode_get_name_prefix,
-	.get_parent = of_fwnode_get_parent,
-	.get_next_child_node = of_fwnode_get_next_child_node,
-	.get_named_child_node = of_fwnode_get_named_child_node,
-	.get_reference_args = of_fwnode_get_reference_args,
-	.graph_get_next_endpoint = of_fwnode_graph_get_next_endpoint,
-	.graph_get_remote_endpoint = of_fwnode_graph_get_remote_endpoint,
-	.graph_get_port_parent = of_fwnode_graph_get_port_parent,
-	.graph_parse_endpoint = of_fwnode_graph_parse_endpoint,
-	.add_links = of_fwnode_add_links,
-};
-```
-
-### of_node_ktype
-
-```C
-struct kobj_type of_node_ktype = {
-        .release = of_node_release,
-};
-```
-
 
 ### of_get_property
 
@@ -746,32 +678,31 @@ static void populate_properties(const void *blob,
 	bool has_name = false;
 
 	pprev = &np->properties;
-               /*遍历获取node的属性*/
+    
+    /*
+     * 1. 遍历获取node的属性
+     * 2. 当到遍历完所有属性后，返回负值，则退出循环
+     */
 	for (cur = fdt_first_property_offset(blob, offset);
 	     cur >= 0;
 	     cur = fdt_next_property_offset(blob, cur)) {
-               /*当到遍历完所有属性后，返回负值，则退出循环*/
 		const __be32 *val;
 		const char *pname;
 		u32 sz;
+        
         /*找到nameoff位置的字符串，并返回其长度*/
 		val = fdt_getprop_by_offset(blob, cur, &pname, &sz);
-		if (!val) {
-			pr_warn("Cannot locate property at 0x%x\n", cur);
-			continue;
-		}
-
-		if (!pname) {
-			pr_warn("Cannot find property name at 0x%x\n", cur);
-			continue;
-		}
-
-		if (!strcmp(pname, "name"))/*存在name属性*/
+        
+        /*存在name属性*/
+		if (!strcmp(pname, "name"))
 			has_name = true;
+        
         /*累计mem，即统计device_node的所需同时，也统计property*/
 		pp = unflatten_dt_alloc(mem, sizeof(struct property),
 					__alignof__(struct property));
-		if (dryrun)/*只统计property所需内存大小，不进行处理*/
+        
+        /* dryrun = 1，只统计不处理 */
+		if (dryrun)
 			continue;
 
 		/* We accept flattened tree phandles either in
@@ -780,7 +711,9 @@ static void populate_properties(const void *blob,
 		 * appear and have different values, things
 		 * will get weird. Don't do that.
 		 */
-		if (!strcmp(pname, "phandle") || /*如果出现phandle属性，则会赋值给property->phandle*/
+        
+        /*如果出现phandle属性，则会赋值给property->phandle*/
+		if (!strcmp(pname, "phandle") || 
 		    !strcmp(pname, "linux,phandle")) {
 			if (!np->phandle)
 				np->phandle = be32_to_cpup(val);
@@ -792,18 +725,22 @@ static void populate_properties(const void *blob,
 		 */
 		if (!strcmp(pname, "ibm,phandle"))
 			np->phandle = be32_to_cpup(val);
-
-		pp->name   = (char *)pname; /*记录属性名*/
-		pp->length = sz; /*属性内容长度*/
-		pp->value  = (__be32 *)val; /*属性内容*/
+        
+		/*记录属性名*/
+		pp->name   = (char *)pname; 
+        
+        /*属性内容长度*/
+		pp->length = sz; 
+        
+        /*属性的内容*/
+		pp->value  = (__be32 *)val; 
+        
 		*pprev     = pp;
 		pprev      = &pp->next;
 	}
 
-	/* With version 0x10 we may not have the name property,
-	 * recreate it here from the unit name if absent
-	 */
-	if (!has_name) { /*自行补全 phandle属性*/
+    /* 补全 phandle属性 */
+	if (!has_name) { 
 		const char *p = nodename, *ps = p, *pa = NULL;
 		int len;
 
@@ -972,20 +909,22 @@ static const struct fdt_property *fdt_get_property_by_offset_(const void *fdt,
 }
 ```
 
+### 总结
 
+- 将dtb展开成层次结构，解析和记录每个node及子node，将node名及长度，phandle句柄，父，子，兄弟，保存在device_node中。
 
-## 总结
+  - FDT_BEGIN_NODE：节点的起始位置。
 
-****
+  - FDT_END_NODE：节点的结束位置，这样就能对每个node进行区分。
 
-1. 将dtb进行展开成device_node，在structure block开始寻找
-2. 根据FDT_BEGIN_NODE来寻找有多少节点，统计需要生成的struct device_node数量
-3. 根据节点的名字（字符串大小）来统计所需的字节长度
-4. 根据每个节点内的FDT_PROP，统计需要生成的struct property数量
-5. 统计自动生成的phandle属性的名字和内容大小
-6. 还有4字节大小的magic数，在内存的最后位置。
-7. 统计的总需内存大小，生成一大块内存。
-8. 重新遍历一次，根据申请的内存，把所有的node和其property指向它，并进行初始化，并对node的父子兄弟关系进行关联
-9. 留意，node会创建long_name的字符串内存，property的name，val并不会新创建，而是直接指向dtb对应的位置。
-10. 填充magic
+  - FDT_END：解析过程的结束位置。
+
+- 在每个device_node解析完成后，会解析node内部的property，将property名及长度，property内容，保存在property中。
+
+  - FDT_PROP：属性的起始位置
+
+- 其中在device_node或property字符串名的内存，会创建在对应结构体后面。
+
+- 由此可见，保存property，但不对内容做具体分析，对device_node层次来说无意义（除了”name”,”chosen”,”alias”,”phandle”，这些会被提前解析处理）。
+- 下一步，会将device_node生成platform_device，最终等到driver解析处理property，赋予特定意义。
 

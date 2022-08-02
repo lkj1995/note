@@ -577,7 +577,140 @@ int of_irq_to_resource_table(struct device_node *dev, struct resource *res,
 
 	return i;
 }
-
-of_irq_to_resource 未完待续
 ```
 
+##### 3-1-2 of_irq_to_resource()
+
+```C
+/**
+ * of_irq_to_resource - Decode a node's IRQ and return it as a resource
+ * @dev: pointer to device tree node
+ * @index: zero-based index of the irq
+ * @r: pointer to resource structure to return result into.
+ */
+int of_irq_to_resource(struct device_node *dev, int index, struct resource *r)
+{
+	int irq = irq_of_parse_and_map(dev, index);
+
+	/* Only dereference the resource if both the
+	 * resource and the irq are valid. */
+	if (r && irq) {
+		const char *name = NULL;
+
+		memset(r, 0, sizeof(*r));
+		/*
+		 * Get optional "interrupt-names" property to add a name
+		 * to the resource.
+		 */
+		of_property_read_string_index(dev, "interrupt-names", index,
+					      &name);
+
+		r->start = r->end = irq;
+		r->flags = IORESOURCE_IRQ | irqd_get_trigger_type(irq_get_irq_data(irq));
+		r->name = name ? name : of_node_full_name(dev);
+	}
+
+	return irq;
+}
+```
+
+##### 3-1-3 irq_of_parse_and_map()
+
+```C
+#define MAX_PHANDLE_ARGS 16
+struct of_phandle_args {
+	struct device_node *np;
+	int args_count;
+	uint32_t args[MAX_PHANDLE_ARGS];
+};
+
+unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
+{
+	struct of_phandle_args oirq;
+
+	if (of_irq_parse_one(dev, index, &oirq))
+		return 0;
+
+	return irq_create_of_mapping(&oirq);
+}
+
+
+
+/**
+ * of_irq_parse_one - Resolve an interrupt for a device
+ * @device: the device whose interrupt is to be resolved
+ * @index: index of the interrupt to resolve
+ * @out_irq: structure of_irq filled by this function
+ *
+ * This function resolves an interrupt for a node by walking the interrupt tree,
+ * finding which interrupt controller node it is attached to, and returning the
+ * interrupt specifier that can be used to retrieve a Linux IRQ number.
+ */
+int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_args *out_irq)
+{
+	struct device_node *p;
+	const __be32 *intspec, *tmp, *addr;
+	u32 intsize, intlen;
+	int i, res;
+
+	pr_debug("of_irq_parse_one: dev=%s, index=%d\n", of_node_full_name(device), index);
+
+	/* OldWorld mac stuff is "special", handle out of line */
+	if (of_irq_workarounds & OF_IMAP_OLDWORLD_MAC)
+		return of_irq_parse_oldworld(device, index, out_irq);
+
+	/* Get the reg property (if any) */
+	addr = of_get_property(device, "reg", NULL);
+
+	/* Try the new-style interrupts-extended first */
+	res = of_parse_phandle_with_args(device, "interrupts-extended",
+					"#interrupt-cells", index, out_irq);
+	if (!res)
+		return of_irq_parse_raw(addr, out_irq);
+
+	/* Get the interrupts property */
+	intspec = of_get_property(device, "interrupts", &intlen);
+	if (intspec == NULL)
+		return -EINVAL;
+
+	intlen /= sizeof(*intspec);
+
+	pr_debug(" intspec=%d intlen=%d\n", be32_to_cpup(intspec), intlen);
+
+	/* Look for the interrupt parent. */
+	p = of_irq_find_parent(device);
+	if (p == NULL)
+		return -EINVAL;
+
+	/* Get size of interrupt specifier */
+	tmp = of_get_property(p, "#interrupt-cells", NULL);
+	if (tmp == NULL) {
+		res = -EINVAL;
+		goto out;
+	}
+	intsize = be32_to_cpu(*tmp);
+
+	pr_debug(" intsize=%d intlen=%d\n", intsize, intlen);
+
+	/* Check index */
+	if ((index + 1) * intsize > intlen) {
+		res = -EINVAL;
+		goto out;
+	}
+
+	/* Copy intspec into irq structure */
+	intspec += index * intsize;
+	out_irq->np = p;
+	out_irq->args_count = intsize;
+	for (i = 0; i < intsize; i++)
+		out_irq->args[i] = be32_to_cpup(intspec++);
+
+	/* Check if there are any interrupt-map translations to process */
+	res = of_irq_parse_raw(addr, out_irq);
+ out:
+	of_node_put(p);
+	return res;
+}
+```
+
+##### 3-1-4 

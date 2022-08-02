@@ -1,25 +1,12 @@
 ### 调用顺序
 
-```
-device_attach() --> __device_attach() --> __device_attach_driver() --> 
-driver_probe_device() --> really_probe()
-```
-
-### really_probe()
-
 ```C
-static int really_probe(struct device *dev, struct device_driver *drv)
-{
-	...
-
-	/* If using pinctrl, bind pins now before probing */
-    /*为某个设备绑定所需的引脚pin*/    
-	ret = pinctrl_bind_pins(dev);
-	if (ret)
-		goto pinctrl_bind_failed;
-	
-	...
-}
+device_attach() 
+	__device_attach() 
+		__device_attach_driver() 
+			driver_probe_device()
+				really_probe()
+/*在dev与drv进行probe时的调用顺序，会在really_probe()中注册pinctrl*/	
 ```
 
 ### struct device
@@ -28,7 +15,8 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 struct device {
  ...
 #ifdef CONFIG_PINCTRL
-	struct dev_pin_info	*pins; /*在device中，使用pins成员，描述pin信息*/
+    /*在device中，使用pins成员，描述引脚的信息*/
+	struct dev_pin_info	*pins; 
 #endif
  ...
 };
@@ -37,14 +25,6 @@ struct device {
 ### struct dev_pin_info
 
 ```C
-/**
- * struct dev_pin_info - pin state container for devices
- * @p: pinctrl handle for the containing device
- * @default_state: the default state for the handle, if found
- * @init_state: the state at probe time, if found
- * @sleep_state: the state at suspend time, if found
- * @idle_state: the state at idle (runtime suspend) time, if found
- */
 struct dev_pin_info {
 	struct pinctrl *p;/*自定义state会添加到p*/
     
@@ -71,7 +51,6 @@ static const struct pinctrl_ops imx_pctrl_ops = {
 	.pin_dbg_show = imx_pin_dbg_show,
 	.dt_node_to_map = imx_dt_node_to_map,
 	.dt_free_map = imx_dt_free_map,
-
 };
 ```
 
@@ -100,17 +79,26 @@ static const struct pinconf_ops imx_pinconf_ops = {
 };
 ```
 
-### 1 pinctrl_bind_pins()
+### 1 really_probe()
 
 ```C
+static int really_probe(struct device *dev, struct device_driver *drv)
+{
+	...
+        
+	/* If using pinctrl, bind pins now before probing */
+    /*为某个设备绑定所需的引脚pin*/    
+	ret = pinctrl_bind_pins(dev);
+	...
+}
+
+
 int pinctrl_bind_pins(struct device *dev)
 {
 	int ret;
 
     /*申请 dev_pin_info 内存*/
 	dev->pins = devm_kzalloc(dev, sizeof(*(dev->pins)), GFP_KERNEL);
-	if (!dev->pins)
-		return -ENOMEM;
 
     /*
      * 获取该device所属的pinctrl，
@@ -119,11 +107,8 @@ int pinctrl_bind_pins(struct device *dev)
      * 返回的pinctrl保存在dev_pin_info中
      */
 	dev->pins->p = devm_pinctrl_get(dev);
-	if (IS_ERR(dev->pins->p)) {
-		dev_dbg(dev, "no pinctrl handle\n");
-		ret = PTR_ERR(dev->pins->p);
-		goto cleanup_alloc;
-	}
+
+    
 	/*获取default状态，并保存在device->pins->default_state上*/
 	dev->pins->default_state = pinctrl_lookup_state(dev->pins->p,
 					PINCTRL_STATE_DEFAULT);
@@ -136,66 +121,292 @@ int pinctrl_bind_pins(struct device *dev)
 	dev->pins->init_state = pinctrl_lookup_state(dev->pins->p,
 					PINCTRL_STATE_INIT);
 	if (IS_ERR(dev->pins->init_state)) {
-		/* Not supplying this state is perfectly legal */
-		dev_dbg(dev, "no init pinctrl state\n");
 
-		ret = pinctrl_select_state(dev->pins->p,/*优先选择default状态*/
+		/*优先选择default状态*/
+		ret = pinctrl_select_state(dev->pins->p,
 					   dev->pins->default_state);
 	} else {
 		ret = pinctrl_select_state(dev->pins->p, dev->pins->init_state);
 	}
-
-	if (ret) {
-		dev_dbg(dev, "failed to activate initial pinctrl state\n");
-		goto cleanup_get;
-	}
-
-#ifdef CONFIG_PM
-	/*
-	 * If power management is enabled, we also look for the optional
-	 * sleep and idle pin states, with semantics as defined in
-	 * <linux/pinctrl/pinctrl-state.h>
-	 */
-	dev->pins->sleep_state = pinctrl_lookup_state(dev->pins->p,
-					PINCTRL_STATE_SLEEP);
-	if (IS_ERR(dev->pins->sleep_state))
-		/* Not supplying this state is perfectly legal */
-		dev_dbg(dev, "no sleep pinctrl state\n");
-
-	dev->pins->idle_state = pinctrl_lookup_state(dev->pins->p,
-					PINCTRL_STATE_IDLE);
-	if (IS_ERR(dev->pins->idle_state))
-		/* Not supplying this state is perfectly legal */
-		dev_dbg(dev, "no idle pinctrl state\n");
-#endif
-
-	return 0;
-
-	/*
-	 * If no pinctrl handle or default state was found for this device,
-	 * let's explicitly free the pin container in the device, there is
-	 * no point in keeping it around.
-	 */
-cleanup_get:
-	devm_pinctrl_put(dev->pins->p);
-cleanup_alloc:
-	devm_kfree(dev, dev->pins);
-	dev->pins = NULL;
-
-	/* Return deferrals */
-	if (ret == -EPROBE_DEFER)
-		return ret;
-	/* Return serious errors */
-	if (ret == -EINVAL)
-		return ret;
-	/* We ignore errors like -ENOENT meaning no pinctrl state */
 
 	return 0;
 }
 
 ```
 
-### 1-1 pinctrl_select_state()
+### 1-1 devm_pinctrl_get()
+
+```C
+struct pinctrl *devm_pinctrl_get(struct device *dev)
+{
+	struct pinctrl **ptr, *p;
+
+	p = pinctrl_get(dev);
+
+	return p;
+}
+
+
+struct pinctrl *pinctrl_get(struct device *dev)
+{
+	struct pinctrl *p;
+
+    /* 
+     * pinctrl_list中寻找pinctrl，
+     * 第一次不存在，执行create_pinctrl() 。
+     */
+	p = find_pinctrl(dev);
+
+	return create_pinctrl(dev);
+}
+
+
+static struct pinctrl *create_pinctrl(struct device *dev)
+{
+	struct pinctrl *p;
+	const char *devname;
+	struct pinctrl_maps *maps_node;
+	int i;
+	struct pinctrl_map const *map;
+	int ret;
+
+
+    /* 申请 pinctrl */
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+
+	p->dev = dev;
+	INIT_LIST_HEAD(&p->states);
+	INIT_LIST_HEAD(&p->dt_maps);
+
+    /* 
+     * 设置 pinctrl,对使用的pinctrl进行展开
+     * 1. state：pinctrl-names = "idle" "default";
+     *	  解析每个状态state。
+     * 2. config: pinctrl-0 = <&NODE1, &NODE2>;
+     *			  pinctrl-1 = <&NODE3, &NODE4>;
+     *    解析当前状态的每个NODE。
+     * 3. map： NODE1 = { 
+     *			 fsl,pins =  <
+     *              MX6UL_PAD_UART3_CTS_B__FLEXCAN1_TX  0x000010B0
+     *              MX6UL_PAD_UART3_RTS_B__FLEXCAN1_RX  0x000010B0
+     *           >;}
+     *    解析当前NODE中的pin信息。         
+     */		
+	ret = pinctrl_dt_to_map(p);
+
+	devname = dev_name(dev);
+
+	/**/
+	for_each_maps(maps_node, i, map) {
+		/* Map must be for this device */
+		if (strcmp(map->dev_name, devname))
+			continue;		
+		
+        /* 每个map转换成setting，生成index */
+		ret = add_setting(p, map);
+
+	}
+
+	/*pinctrl绑定node后，放入list，可使用node进行查找*/
+	list_add_tail(&p->node, &pinctrl_list);
+
+	return p;
+}
+```
+
+### 1-1-1 pinctrl_dt_to_map()
+
+```C
+int pinctrl_dt_to_map(struct pinctrl *p)
+{
+    /* 
+     * pinctrl_name = "default"; pinctrl-0 = <&node0>;
+     * 先前解析的是iomuxc中的group，此时需要解析上面的node
+     * 对应真正的device，而不是platform_device的iomuxc
+     */
+	struct device_node *np = p->dev->of_node;
+	int state, ret;
+	char *propname;
+	struct property *prop;
+	const char *statename;
+	const __be32 *list;
+	int size, config;
+	phandle phandle;
+	struct device_node *np_config;
+
+   
+     /* state："pinctrl-names"中的 "idle" "default" "sleep"等 */
+	for (state = 0; ; state++) {
+        
+        /* 构造如 "pinctrl-0" 的字符串 */
+		propname = kasprintf(GFP_KERNEL, "pinctrl-%d", state);
+        
+        /*找到名为"pinctrl-0"的属性，获取内容及prop和长度size*/
+		prop = of_find_property(np, propname, &size);
+           
+        /*内容：phandle值（如 0x1f），引用了iomuxc中的某个group*/
+		list = prop->value;
+        
+        /*引用了多少个node（phandle数量）*/
+		size /= sizeof(*list);
+
+		/* Determine whether pinctrl-names property names the state */
+        /*处理状态，找到第state个字符串 如"idle" "sleep"*/
+		ret = of_property_read_string_index(np, "pinctrl-names",
+						    state, &statename);
+
+        
+        /*
+         * 处理每个state中的所有config，为每个
+         * config创建pinctrl_map，即多少组引脚
+         * 需要被记录到pinctrl_map。
+         */
+		for (config = 0; config < size; config++) {
+            
+            /*list++, 指向下一个phandle*/
+			phandle = be32_to_cpup(list++);
+
+			/* Look up the pin configuration node */
+            /*根据phandle找到"iomuxc"中的某个group*/
+			np_config = of_find_node_by_phandle(phandle);
+
+             
+            /* 生成1个pinctrl_map*/
+			ret = dt_to_map_one_config(p, statename, np_config);
+
+		}
+	}
+
+	return 0;
+}
+```
+
+### 1-1-1-1 dt_to_map_one_config()
+
+```C
+static int dt_to_map_one_config(struct pinctrl *p, const char *statename,
+				struct device_node *np_config)
+{
+	struct device_node *np_pctldev;
+	struct pinctrl_dev *pctldev;
+	const struct pinctrl_ops *ops;
+	int ret;
+	struct pinctrl_map *map;
+	unsigned num_maps;
+
+    
+	for (;;) {
+               
+        /* 获取parent("iomuxc")node */
+		np_pctldev = of_get_next_parent(np_config);
+        
+        /* 在 pinctrldev_list，根据of_node找到父亲的 pinctrl_dev */        
+		pctldev = get_pinctrl_dev_from_of_node(np_pctldev);     
+	}
+
+    /* 获取pinctrl_desc的fops，已在iomuxc节点中设置 */
+	ops = pctldev->desc->pctlops;
+    
+
+    /*
+     * 执行 imx_dt_node_to_map()，
+     * 读取soc_info构造的信息，根据pin数量，
+     * 申请n+1个pinctrl_map,设置pinctrl_map
+     */
+	ret = ops->dt_node_to_map(pctldev, np_config, &map, &num_maps);
+	if (ret < 0)
+		return ret;
+
+	/* Stash the mapping table chunk away for later use */
+	return dt_remember_or_free_map(p, statename, pctldev, map, num_maps);
+}
+```
+
+### 1-1-1-1-1 imx_dt_node_to_map()
+
+```C
+
+static int imx_dt_node_to_map(struct pinctrl_dev *pctldev,
+			struct device_node *np,
+			struct pinctrl_map **map, unsigned *num_maps)
+{
+    
+     /*获得私有指针指向的imx_pinctrl  */
+	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
+    
+    /* 取出imx_pinctrl_soc_info */
+	const struct imx_pinctrl_soc_info *info = ipctl->info;
+	const struct imx_pin_group *grp;
+	struct pinctrl_map *new_map;
+	struct device_node *parent;
+    
+    /*生成n+1个pinctrl_map*/
+	int map_num = 1;
+	int i, j;
+
+    
+     /* 在soc info，根据名字匹配imx_pin_group */
+	grp = imx_pinctrl_find_group_by_name(info, np->name);
+
+     /* grp->npins：根据group的pin数量，确定需要的map数量*/
+	for (i = 0; i < grp->npins; i++) {
+		if (!(grp->pins[i].config & IMX_NO_PAD_CTL))
+			map_num++;
+	}
+
+    /*申请 n+1个 pinctrl_map 内存*/
+	new_map = kmalloc(sizeof(struct pinctrl_map) * map_num, GFP_KERNEL);
+
+
+    /*二级指针，用于返回*/
+	*map = new_map;
+	*num_maps = map_num;
+
+
+    /* 取parent，"iomuxc"节点 */
+	parent = of_get_parent(np);
+ 
+    /*
+     * func  为 "imx6ul_evk"
+     * group 为 "i2cgrp"
+     */
+	new_map[0].type = PIN_MAP_TYPE_MUX_GROUP;
+	new_map[0].data.mux.function = parent->name;
+	new_map[0].data.mux.group = np->name;
+    
+
+	/* 偏移下一个map */
+	new_map++;
+    
+    /*设置 [1]~[grp->npins]个map */
+	for (i = j = 0; i < grp->npins; i++) {
+		if (!(grp->pins[i].config & IMX_NO_PAD_CTL)) {
+            
+			new_map[j].type = PIN_MAP_TYPE_CONFIGS_PIN;
+            
+            /*
+             * 1. 保存在imx_pinctrl_soc_info的imx_pin_group
+             *     里面的imx_pin的pin成员，指的是pin号
+             * 2. 可根据pin号，在pinctrl_dev的pin_desc_tree中
+             *    找到pin号对应的名字，并返回
+             */
+			new_map[j].data.configs.group_or_pin =
+					pin_get_name(pctldev, grp->pins[i].pin);
+            
+            /*
+             * 如：MX6UL_PAD_UART1_RTS_B__GPIO1_IO19 0x17059
+             * config值：0x17059
+             */
+			new_map[j].data.configs.configs = &grp->pins[i].config;
+			new_map[j].data.configs.num_configs = 1;
+			j++;
+		}
+	}
+	return 0;
+}
+```
+
+### 1-2 pinctrl_select_state()
 
 ```C
 /**
@@ -278,7 +489,7 @@ unapply_new_state:
 }
 ```
 
-### 1-1-1 pinmux_enable_setting()
+### 1-2-1 pinmux_enable_setting()
 
 ```C
 int pinmux_enable_setting(struct pinctrl_setting const *setting)
@@ -363,7 +574,7 @@ err_pin_request:
 }
 ```
 
-### 1-1-2 pinconf_apply_setting
+### 1-2-2 pinconf_apply_setting()
 
 ```C
 int pinconf_apply_setting(struct pinctrl_setting const *setting)
@@ -419,7 +630,7 @@ int pinconf_apply_setting(struct pinctrl_setting const *setting)
 }
 ```
 
-### 1-1-1-1 imx_pmx_set()
+### 1-2-1-1 imx_pmx_set()
 
 ```C
 static int imx_pmx_set(struct pinctrl_dev *pctldev, unsigned selector,
@@ -513,7 +724,7 @@ static int imx_pmx_set(struct pinctrl_dev *pctldev, unsigned selector,
 }
 ```
 
-### 1-1-2-1 imx_pinconf_set()
+### 1-2-2-1 imx_pinconf_set()
 
 ```C
 static int imx_pinconf_set(struct pinctrl_dev *pctldev,
@@ -554,5 +765,34 @@ static int imx_pinconf_set(struct pinctrl_dev *pctldev,
 
 
 
+### 总结
 
+```c
+&i2c1 {
+    clock-frequency = <100000>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c1>;
+    status = "okay";
+};
+
+pinctrl_i2c1: i2c1grp {
+    fsl,pins = <
+         MX6UL_PAD_UART4_TX_DATA__I2C1_SCL 0x4001b8b0
+         MX6UL_PAD_UART4_RX_DATA__I2C1_SDA 0x4001b8b0
+     >;
+};
+```
+
+- 为了方便理解，使用上述DTS的i2c client进行说明。
+
+- 当driver与device已成功match，调用probe初始化之前，会先调用really_probe()，对设备进行相应的处理，其中包含了pinctrl子系统的处理 。
+- 第一步，申请pinctrl，并根据DTS，寻找" pinctrl-* "，遍历每个state。当前只有一个state，为"default"。
+- 第二步，根据当前state = "default"，寻找" pinctrl-0 " 内容，遍历每个config(指的是phandle)，当前只有一个config， 为 <&pinctrl_i2c1>。
+- 第三步，根据当前config，找到属性名为"fsl,pins"，读取父节点("iomuxc")的pinctrl_dev，使用pinctrl_dev->fops，找到已经构造完毕的soc_info->groups，根据节点名字，获取其groups和pins，利用该信息，申请对应的map，设置map，当前map为2个，申请2+1个（有1个用于function）
+  - " MX6UL_PAD_UART4_TX_DATA__I2C1_SCL   0x4001b8b0 "
+  -  " MX6UL_PAD_UART4_RX_DATA__I2C1_SDA  0x4001b8b0 "
+
+- 第四步，此时先申请state，并挂入pinctrl->states的list中，申请多个setting，将所有map转换成setting，保存在state->settings的list中。
+
+- 可看申请内存的过程，pinctrl -> pinctrl_map -> state -> settings。
 
