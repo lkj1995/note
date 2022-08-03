@@ -638,48 +638,7 @@ int of_gpiochip_add(struct gpio_chip *chip)
 }
 ```
 
-### 1-2-1-1 of_gpio_simple_xlate()
-
-```C
-/**
- * of_gpio_simple_xlate - translate gpio_spec to the GPIO number and flags
- * @gc:		pointer to the gpio_chip structure
- * @np:		device node of the GPIO chip
- * @gpio_spec:	gpio specifier as found in the device tree
- * @flags:	a flags pointer to fill in
- *
- * This is simple translation function, suitable for the most 1:1 mapped
- * gpio chips. This function performs only one sanity check: whether gpio
- * is less than ngpios (that is specified in the gpio_chip).
- */
-int of_gpio_simple_xlate(struct gpio_chip *gc,
-			 const struct of_phandle_args *gpiospec, u32 *flags)
-{
-	/*
-	 * We're discouraging gpio_cells < 2, since that way you'll have to
-	 * write your own xlate function (that will have to retrieve the GPIO
-	 * number and the flags from a single gpio cell -- this is possible,
-	 * but not recommended).
-	 */
-	if (gc->of_gpio_n_cells < 2) {
-		WARN_ON(1);
-		return -EINVAL;
-	}
-
-	if (WARN_ON(gpiospec->args_count < gc->of_gpio_n_cells))
-		return -EINVAL;
-
-	if (gpiospec->args[0] >= gc->ngpio)
-		return -EINVAL;
-
-	if (flags)
-		*flags = gpiospec->args[1];
-
-	return gpiospec->args[0];
-}
-```
-
-### 1-2-1-1-1 of_gpiochip_add_pin_range()
+### 2 of_gpiochip_add_pin_range()
 
 ```C
 /*
@@ -797,7 +756,7 @@ static int of_gpiochip_add_pin_range(struct gpio_chip *chip)
 
 ```
 
-### 1-2-1-1-1-1 of_parse_phandle_with_fixed_args()
+###  2-1 of_parse_phandle_with_fixed_args()
 
 ```C
 /**
@@ -897,7 +856,7 @@ static int __of_parse_phandle_with_args(const struct device_node *np,
 }
 ```
 
-### 1-2-1-1-1-2 gpiochip_add_pin_range()
+### 2-1-1 gpiochip_add_pin_range()
 
 ```C
 /**
@@ -961,7 +920,6 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
 
 	return 0;
 }
-
 ```
 
 ### 总结
