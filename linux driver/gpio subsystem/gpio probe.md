@@ -1,8 +1,4 @@
-- 在gpio子系统中，芯片厂商会注册n个platfrom_driver，以用于匹配dts中对应的gpio-controler
-
-- driver的匹配名称为‘’ imx35-gpio ‘’
-
-- 因此匹配符合规则的gpio节点，如 imx6ull.dtsi 中的 gpio1~5 共用一个driver处理
+### dts描述
 
 ```c
 gpio1: gpio@0209c000 {
@@ -15,50 +11,14 @@ gpio1: gpio@0209c000 {
 	interrupt-controller;
 	#interrupt-cells = <2>;
 };
+/*
 
-gpio2: gpio@020a0000 {
-	compatible = "fsl,imx6ul-gpio", "fsl,imx35-gpio";
-	reg = <0x020a0000 0x4000>;
-	interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>,
-				<GIC_SPI 69 IRQ_TYPE_LEVEL_HIGH>;
-	gpio-controller;
-	#gpio-cells = <2>;
-	interrupt-controller;
-	#interrupt-cells = <2>;
-};
+| 66 | gpio1 |  Combined interrupt indication for GPIO1 signal 0 throughout|
+| 67 | gpio1 |  Combined interrupt indication for GPIO1 signal 16 throughout|
 
-gpio3: gpio@020a4000 {
-	compatible = "fsl,imx6ul-gpio", "fsl,imx35-gpio";
-	reg = <0x020a4000 0x4000>;
-	interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>,
-				<GIC_SPI 71 IRQ_TYPE_LEVEL_HIGH>;
-	gpio-controller;
-	#gpio-cells = <2>;
-	interrupt-controller;
-	#interrupt-cells = <2>;
-};
+两个中断号属于gpio1
 
-gpio4: gpio@020a8000 {
-	compatible = "fsl,imx6ul-gpio", "fsl,imx35-gpio";
-	reg = <0x020a8000 0x4000>;
-	interrupts = <GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>,
-				 <GIC_SPI 73 IRQ_TYPE_LEVEL_HIGH>;
-	gpio-controller;
-	#gpio-cells = <2>;
-	interrupt-controller;
-	#interrupt-cells = <2>;
-};
-
-gpio5: gpio@020ac000 {
-	compatible = "fsl,imx6ul-gpio", "fsl,imx35-gpio";
-	reg = <0x020ac000 0x4000>;
-	interrupts = <GIC_SPI 74 IRQ_TYPE_LEVEL_HIGH>,
-				<GIC_SPI 75 IRQ_TYPE_LEVEL_HIGH>;
-	gpio-controller;
-	#gpio-cells = <2>;
-	interrupt-controller;
-	#interrupt-cells = <2>;
-};
+*/
 ```
 
 ### gpio_mxc_init()
@@ -76,9 +36,7 @@ static const struct platform_device_id mxc_gpio_devtype[] = {
 	}, {
 		.name = "imx35-gpio",
 		.driver_data = IMX35_GPIO,
-	}, {
-		/* sentinel */
-	}
+	},
 };
 
 static const struct of_device_id mxc_gpio_dt_ids[] = {
@@ -105,7 +63,7 @@ static struct platform_driver mxc_gpio_driver = {
 
 static int __init gpio_mxc_init(void)
 {
-    /*注册一个 platform drv*/
+    /* 申请名为 "gpio-mxc" 的 platform driver */
 	return platform_driver_register(&mxc_gpio_driver); 
 }
 subsys_initcall(gpio_mxc_init);
@@ -128,103 +86,6 @@ struct mxc_gpio_port {
 ### struct gpio_chip
 
 ```C
-/**
- * struct gpio_chip - abstract a GPIO controller
- * @label: a functional name for the GPIO device, such as a part
- *	number or the name of the SoC IP-block implementing it.
- * @gpiodev: the internal state holder, opaque struct
- * @parent: optional parent device providing the GPIOs
- * @owner: helps prevent removal of modules exporting active GPIOs
- * @request: optional hook for chip-specific activation, such as
- *	enabling module power and clock; may sleep
- * @free: optional hook for chip-specific deactivation, such as
- *	disabling module power and clock; may sleep
- * @get_direction: returns direction for signal "offset", 0=out, 1=in,
- *	(same as GPIOF_DIR_XXX), or negative error
- * @direction_input: configures signal "offset" as input, or returns error
- * @direction_output: configures signal "offset" as output, or returns error
- * @get: returns value for signal "offset", 0=low, 1=high, or negative error
- * @set: assigns output value for signal "offset"
- * @set_multiple: assigns output values for multiple signals defined by "mask"
- * @set_debounce: optional hook for setting debounce time for specified gpio in
- *	interrupt triggered gpio chips
- * @set_single_ended: optional hook for setting a line as open drain, open
- *	source, or non-single ended (restore from open drain/source to normal
- *	push-pull mode) this should be implemented if the hardware supports
- *	open drain or open source settings. The GPIOlib will otherwise try
- *	to emulate open drain/source by not actively driving lines high/low
- *	if a consumer request this. The driver may return -ENOTSUPP if e.g.
- *	it supports just open drain but not open source and is called
- *	with LINE_MODE_OPEN_SOURCE as mode argument.
- * @to_irq: optional hook supporting non-static gpio_to_irq() mappings;
- *	implementation may not sleep
- * @dbg_show: optional routine to show contents in debugfs; default code
- *	will be used when this is omitted, but custom code can show extra
- *	state (such as pullup/pulldown configuration).
- * @base: identifies the first GPIO number handled by this chip;
- *	or, if negative during registration, requests dynamic ID allocation.
- *	DEPRECATION: providing anything non-negative and nailing the base
- *	offset of GPIO chips is deprecated. Please pass -1 as base to
- *	let gpiolib select the chip base in all possible cases. We want to
- *	get rid of the static GPIO number space in the long run.
- * @ngpio: the number of GPIOs handled by this controller; the last GPIO
- *	handled is (base + ngpio - 1).
- * @names: if set, must be an array of strings to use as alternative
- *      names for the GPIOs in this chip. Any entry in the array
- *      may be NULL if there is no alias for the GPIO, however the
- *      array must be @ngpio entries long.  A name can include a single printk
- *      format specifier for an unsigned int.  It is substituted by the actual
- *      number of the gpio.
- * @can_sleep: flag must be set iff get()/set() methods sleep, as they
- *	must while accessing GPIO expander chips over I2C or SPI. This
- *	implies that if the chip supports IRQs, these IRQs need to be threaded
- *	as the chip access may sleep when e.g. reading out the IRQ status
- *	registers.
- * @irq_not_threaded: flag must be set if @can_sleep is set but the
- *	IRQs don't need to be threaded
- * @read_reg: reader function for generic GPIO
- * @write_reg: writer function for generic GPIO
- * @pin2mask: some generic GPIO controllers work with the big-endian bits
- *	notation, e.g. in a 8-bits register, GPIO7 is the least significant
- *	bit. This callback assigns the right bit mask.
- * @reg_dat: data (in) register for generic GPIO
- * @reg_set: output set register (out=high) for generic GPIO
- * @reg_clk: output clear register (out=low) for generic GPIO
- * @reg_dir: direction setting register for generic GPIO
- * @bgpio_bits: number of register bits used for a generic GPIO i.e.
- *	<register width> * 8
- * @bgpio_lock: used to lock chip->bgpio_data. Also, this is needed to keep
- *	shadowed and real data registers writes together.
- * @bgpio_data:	shadowed data register for generic GPIO to clear/set bits
- *	safely.
- * @bgpio_dir: shadowed direction register for generic GPIO to clear/set
- *	direction safely.
- * @irqchip: GPIO IRQ chip impl, provided by GPIO driver
- * @irqdomain: Interrupt translation domain; responsible for mapping
- *	between GPIO hwirq number and linux irq number
- * @irq_base: first linux IRQ number assigned to GPIO IRQ chip (deprecated)
- * @irq_handler: the irq handler to use (often a predefined irq core function)
- *	for GPIO IRQs, provided by GPIO driver
- * @irq_default_type: default IRQ triggering type applied during GPIO driver
- *	initialization, provided by GPIO driver
- * @irq_parent: GPIO IRQ chip parent/bank linux irq number,
- *	provided by GPIO driver
- * @irq_need_valid_mask: If set core allocates @irq_valid_mask with all
- *	bits set to one
- * @irq_valid_mask: If not %NULL holds bitmask of GPIOs which are valid to
- *	be included in IRQ domain of the chip
- * @lock_key: per GPIO IRQ chip lockdep class
- *
- * A gpio_chip can help platforms abstract various sources of GPIOs so
- * they can all be accessed through a common programing interface.
- * Example sources would be SOC controllers, FPGAs, multifunction
- * chips, dedicated GPIO expanders, and so on.
- *
- * Each chip controls a number of signals, identified in method calls
- * by "offset" values in the range 0..(@ngpio - 1).  When those signals
- * are referenced through calls like gpio_get_value(gpio), the offset
- * is calculated by subtracting @base from the gpio number.
- */
 struct gpio_chip {
 	const char		*label;
 	struct gpio_device	*gpiodev;
@@ -352,114 +213,7 @@ struct gpio_desc {
 #define GPIO_INT_BOTH_EDGES	0x4
 ```
 
-### 1 mxc_gpio_probe()
 
-```C
-static int mxc_gpio_probe(struct platform_device *pdev)
-{
-	struct device_node *np = pdev->dev.of_node;
-	struct mxc_gpio_port *port;
-	struct resource *iores;
-	int irq_base;
-	int err;
-
-    /*记录soc的gpio寄存器偏移值*/
-	mxc_gpio_get_hw(pdev);
-	
-    /*申请 mxc_gpio_port 结构内存*/
-	port = devm_kzalloc(&pdev->dev, sizeof(*port), GFP_KERNEL);
-	if (!port)
-		return -ENOMEM;
-	
-    /*获取reg属性信息，如gpio控制器基地址，寄存器数量*/
-	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-    
-    /*转换为虚拟地址并保存*/
-	port->base = devm_ioremap_resource(&pdev->dev, iores);
-	if (IS_ERR(port->base))
-		return PTR_ERR(port->base);
-
-	port->irq_high = platform_get_irq(pdev, 1);
-	port->irq = platform_get_irq(pdev, 0);
-	if (port->irq < 0)
-		return port->irq;
-
-	/* disable the interrupt and clear the status */
-	writel(0, port->base + GPIO_IMR);/*禁止中断*/
-	writel(~0, port->base + GPIO_ISR);/*清空状态寄存器*/
-
-	if (mxc_gpio_hwtype == IMX21_GPIO) {
-		/*
-		 * Setup one handler for all GPIO interrupts. Actually setting
-		 * the handler is needed only once, but doing it for every port
-		 * is more robust and easier.
-		 */
-		irq_set_chained_handler(port->irq, mx2_gpio_irq_handler);
-	} else {
-		/* setup one handler for each entry */
-		irq_set_chained_handler_and_data(port->irq,
-						 mx3_gpio_irq_handler, port);
-		if (port->irq_high > 0)
-			/* setup handler for GPIO 16 to 31 */
-			irq_set_chained_handler_and_data(port->irq_high,
-							 mx3_gpio_irq_handler,
-							 port);
-	}
-
-    /*记录了使用gpio（保存了读，写及方向寄存器地址，设置好如何操作寄存器的函数等）*/
-	err = bgpio_init(&port->gc, &pdev->dev, 4,
-			 port->base + GPIO_PSR,
-			 port->base + GPIO_DR, NULL,
-			 port->base + GPIO_GDIR, NULL,
-			 BGPIOF_READ_OUTPUT_REG_SET);
-	if (err)
-		goto out_bgio;
-
-    
-	if (of_property_read_bool(np, "gpio-ranges")) {
-		port->gc.request = gpiochip_generic_request;
-		port->gc.free = gpiochip_generic_free;
-	}
-
-	port->gc.to_irq = mxc_gpio_to_irq;
-	port->gc.base = (pdev->id < 0) ? of_alias_get_id(np, "gpio") * 32 :
-					     pdev->id * 32;
-
-	err = devm_gpiochip_add_data(&pdev->dev, &port->gc, port);
-	if (err)
-		goto out_bgio;
-
-	irq_base = irq_alloc_descs(-1, 0, 32, numa_node_id());
-	if (irq_base < 0) {
-		err = irq_base;
-		goto out_bgio;
-	}
-
-	port->domain = irq_domain_add_legacy(np, 32, irq_base, 0,
-					     &irq_domain_simple_ops, NULL);
-	if (!port->domain) {
-		err = -ENODEV;
-		goto out_irqdesc_free;
-	}
-
-	/* gpio-mxc can be a generic irq chip */
-	err = mxc_gpio_init_gc(port, irq_base);
-	if (err < 0)
-		goto out_irqdomain_remove;
-
-	list_add_tail(&port->node, &mxc_gpio_ports);
-
-	return 0;
-
-out_irqdomain_remove:
-	irq_domain_remove(port->domain);
-out_irqdesc_free:
-	irq_free_descs(irq_base, 32);
-out_bgio:
-	dev_info(&pdev->dev, "%s failed with errno %d\n", __func__, err);
-	return err;
-}
-```
 
 ### struct mxc_gpio_hwdata
 
@@ -507,67 +261,162 @@ enum mxc_gpio_hwtype {
 };
 ```
 
-### 1-1 mxc_gpio_get_hw()
+### struct gpio_device
 
 ```C
-/*
- * Struct used for matching a device
- */
-struct of_device_id {
-        char    name[32];
-        char    type[32];
-        char    compatible[128];
-        const void *data;
+struct gpio_device {
+	int			id;
+	struct device		dev;
+	struct cdev		chrdev;
+	struct device		*mockdev;
+	struct module		*owner;
+	struct gpio_chip	*chip;
+	struct gpio_desc	*descs;
+	int			base;
+	u16			ngpio;
+	char			*label;
+	void			*data;
+	struct list_head        list;
+
+#ifdef CONFIG_PINCTRL
+	/*
+	 * If CONFIG_PINCTRL is enabled, then gpio controllers can optionally
+	 * describe the actual pin range which they serve in an SoC. This
+	 * information would be used by pinctrl subsystem to configure
+	 * corresponding pins for gpio usage.
+	 */
+	struct list_head pin_ranges;
+#endif
 };
+```
 
-static enum mxc_gpio_hwtype mxc_gpio_hwtype;
-static struct mxc_gpio_hwdata *mxc_gpio_hwdata;
+### 1 mxc_gpio_probe()
 
-
-
-static void mxc_gpio_get_hw(struct platform_device *pdev)
+```C
+static int mxc_gpio_probe(struct platform_device *pdev)
 {
-    /*
-     * 获取当前soc的信息，厂商已定义好
-     */
-	const struct of_device_id *of_id = 
-			of_match_device(mxc_gpio_dt_ids, &pdev->dev);
-	enum mxc_gpio_hwtype hwtype;
-	
-    /*保存 of_device_id 索引*/
-	if (of_id)
-		pdev->id_entry = of_id->data;
- 
-    /*
-     * .driver_data = IMX35_GPIO
-     * 匹配类型为：IMX35_GPIO
-     */
-	hwtype = pdev->id_entry->driver_data; 
-	
-    /*已经匹配过了，不能重复匹配*/
-	if (mxc_gpio_hwtype) { 
-		/*
-		 * The driver works with a reasonable presupposition,
-		 * that is all gpio ports must be the same type when
-		 * running on one soc.
-		 */
-		BUG_ON(mxc_gpio_hwtype != hwtype);
-		return;
-	}
-    
-	/*记录了gpio寄存器基值的偏移值*/
-	if (hwtype == IMX35_GPIO)
-		mxc_gpio_hwdata = &imx35_gpio_hwdata;
-	else if (hwtype == IMX31_GPIO)
-		mxc_gpio_hwdata = &imx31_gpio_hwdata;
-	else
-		mxc_gpio_hwdata = &imx1_imx21_gpio_hwdata;
+	struct device_node *np = pdev->dev.of_node;
+	struct mxc_gpio_port *port;
+	struct resource *iores;
+	int irq_base;
+	int err;
 
-	mxc_gpio_hwtype = hwtype;
+    /*确认soc型号,根据型号获取gpio相关寄存器的地址 */
+	mxc_gpio_get_hw(pdev);
+	
+    /*申请 mxc_gpio_port */
+	port = devm_kzalloc(&pdev->dev, sizeof(*port), GFP_KERNEL);
+
+    /* 
+     * 1. 获取"reg"属性内容，gpio寄存器起始地址，数量，    
+     * 2. 将其转换为虚拟地址，用于后续访问。
+     */
+	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	port->base = devm_ioremap_resource(&pdev->dev, iores);
+    
+	/* 
+	 * 获取两个中断号,在imx6ull的gpio外设中，
+	 * goiox_0~goiox_15为第一组中断，
+	 * goiox_16~goiox_32为第二组中断。
+	 */
+	port->irq_high = platform_get_irq(pdev, 1);
+	port->irq = platform_get_irq(pdev, 0);
+
+    /* 获取时钟值 可选项 */
+    port->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(port->clk))
+		port->clk = NULL;
+    
+	/*
+	 * 1. 设置IMR寄存器，禁止中断
+	 * 2. 设置ISR寄存器，清空状态
+	 */
+	writel(0, port->base + GPIO_IMR);
+	writel(~0, port->base + GPIO_ISR);
+
+    /*此型号每个gpio外设只有一个irq*/
+	if (mxc_gpio_hwtype == IMX21_GPIO) { 
+		irq_set_chained_handler(port->irq, mx2_gpio_irq_handler);
+	} else {
+        
+        /* 注册gpiox的2个中断号 */       
+		/* setup one handler for each entry */
+		irq_set_chained_handler_and_data(port->irq,
+						 mx3_gpio_irq_handler, port);
+        
+		if (port->irq_high > 0)
+			/* setup handler for GPIO 16 to 31 */
+			irq_set_chained_handler_and_data(port->irq_high,
+							 mx3_gpio_irq_handler,
+							 port);
+        
+	}
+
+    /*
+     * 根据soc的信息，设置gpio_chip
+     * 1. 设置gpio的寄存器地址
+     */
+	err = bgpio_init(&port->gc, &pdev->dev, 4,
+			 port->base + GPIO_PSR,
+			 port->base + GPIO_DR, NULL,
+			 port->base + GPIO_GDIR, NULL,
+			 BGPIOF_READ_OUTPUT_REG_SET);
+
+    /* 获取"gpio-ranges"属性 */
+	if (of_property_read_bool(np, "gpio-ranges")) {
+		port->gc.request = gpiochip_generic_request;
+		port->gc.free = gpiochip_generic_free;
+	}
+
+    /* 2. 设置中间层操作函数，如何使用gpio寄存器 */
+	port->gc.request = mxc_gpio_request;
+	port->gc.free = mxc_gpio_free;
+	port->gc.parent = &pdev->dev;    
+	port->gc.to_irq = mxc_gpio_to_irq;
+    /* 
+     * 获取别名的id,每个gpio有32个引脚号，如gpio1_2，base为33 
+     * 如果设置成-1，在这里自动分配
+     */
+	port->gc.base = (pdev->id < 0) ? of_alias_get_id(np, "gpio") * 32 :
+					     pdev->id * 32;
+
+    
+	err = devm_gpiochip_add_data(&pdev->dev, &port->gc, port);
+
+
+	irq_base = irq_alloc_descs(-1, 0, 32, numa_node_id());
+	if (irq_base < 0) {
+		err = irq_base;
+		goto out_bgio;
+	}
+
+	port->domain = irq_domain_add_legacy(np, 32, irq_base, 0,
+					     &irq_domain_simple_ops, NULL);
+	if (!port->domain) {
+		err = -ENODEV;
+		goto out_irqdesc_free;
+	}
+
+	/* gpio-mxc can be a generic irq chip */
+	err = mxc_gpio_init_gc(port, irq_base);
+	if (err < 0)
+		goto out_irqdomain_remove;
+
+	list_add_tail(&port->node, &mxc_gpio_ports);
+
+	return 0;
+
+out_irqdomain_remove:
+	irq_domain_remove(port->domain);
+out_irqdesc_free:
+	irq_free_descs(irq_base, 32);
+out_bgio:
+	dev_info(&pdev->dev, "%s failed with errno %d\n", __func__, err);
+	return err;
 }
 ```
 
-### 1-2 bgpio_init()
+### 1-1 bgpio_init()
 
 ```C
 /*
@@ -627,245 +476,22 @@ int bgpio_init(struct gpio_chip *gc, struct device *dev,
 }
 ```
 
-### 1-2-1 bgpio_setup_io()
+### 1-2 devm_gpiochip_add_data()
 
 ```C
-/*
- * Create the device and allocate the resources.  For setting GPIO's there are
- * three supported configurations:
- *
- *	- single input/output register resource (named "dat").
- *	- set/clear pair (named "set" and "clr").
- *	- single output register resource and single input resource ("set" and
- *	dat").
- *
- * For the single output register, this drives a 1 by setting a bit and a zero
- * by clearing a bit.  For the set clr pair, this drives a 1 by setting a bit
- * in the set register and clears it by setting a bit in the clear register.
- * The configuration is detected by which resources are present.
- *
- * For setting the GPIO direction, there are three supported configurations:
- *
- *	- simple bidirection GPIO that requires no configuration.
- *	- an output direction register (named "dirout") where a 1 bit
- *	indicates the GPIO is an output.
- *	- an input direction register (named "dirin") where a 1 bit indicates
- *	the GPIO is an input.
- */
-static int bgpio_setup_io(struct gpio_chip *gc,
-			  void __iomem *dat,
-			  void __iomem *set,
-			  void __iomem *clr,
-			  unsigned long flags)
-{
-    /*传入 (gc, port->base + GPIO_PSR, port->base + GPIO_DR, NULL) */
-    
-	/*记录状态寄存器，用于读电平*/
-	gc->reg_dat = dat;
-	if (!gc->reg_dat)
-		return -EINVAL;
-
-   
-	if (set && clr) {
-		gc->reg_set = set;
-		gc->reg_clr = clr;
-		gc->set = bgpio_set_with_clear;
-		gc->set_multiple = bgpio_set_multiple_with_clear;
-	} else if (set && !clr) {
-        
-        /*记录控制寄存器，用于设置电平*/
-		gc->reg_set = set;
-        
-        /*
-         * 具体操作函数
-         * gc->bgpio_data |= mask; or gc->bgpio_data &= ~mask; 
-         * gc->write_reg(gc->reg_set, gc->bgpio_data); 
-         */
-		gc->set = bgpio_set_set;
-		gc->set_multiple = bgpio_set_multiple_set;
-	} else if (flags & BGPIOF_NO_OUTPUT) {
-		gc->set = bgpio_set_none;
-		gc->set_multiple = NULL;
-	} else {
-		gc->set = bgpio_set;
-		gc->set_multiple = bgpio_set_multiple;
-	}
-
-	if (!(flags & BGPIOF_UNREADABLE_REG_SET) &&
-	    (flags & BGPIOF_READ_OUTPUT_REG_SET))
-		gc->get = bgpio_get_set;
-	else
-		gc->get = bgpio_get;
-
-	return 0;
-}
-```
-
-### 1-2-2 bgpio_setup_direction()
-
-```C
-/*记录了如何操作gpio方向*/
-static int bgpio_setup_direction(struct gpio_chip *gc,
-				 void __iomem *dirout,
-				 void __iomem *dirin,
-				 unsigned long flags)
-{
-    /* IO不能同时输入输出 */
-	if (dirout && dirin) {
-		return -EINVAL;
-	} else if (dirout) {
-        
-        /*保存gpio dr寄存器地址*/
-		gc->reg_dir = dirout; 
-        
-        /* 
-         * bgpio_dir_out()函数用法：设置方向，然后写入dr寄存器
-         *   gc->bgpio_dir |= gc->pin2mask(gc, gpio);
-         *   gc->write_reg(gc->reg_dir, gc->bgpio_dir);
-         */
-		gc->direction_output = bgpio_dir_out;
-        
-        /*同上*/
-		gc->direction_input = bgpio_dir_in;
-        
-        /* Return 0 if output, 1 of input */
-		gc->get_direction = bgpio_get_dir;
-        
-	} else if (dirin) {
-		gc->reg_dir = dirin;
-		gc->direction_output = bgpio_dir_out_inv;
-		gc->direction_input = bgpio_dir_in_inv;
-		gc->get_direction = bgpio_get_dir_inv;
-	} else {
-		if (flags & BGPIOF_NO_OUTPUT)
-			gc->direction_output = bgpio_dir_out_err;
-		else
-			gc->direction_output = bgpio_simple_dir_out;
-		gc->direction_input = bgpio_simple_dir_in;
-	}
-
-	return 0;
-}
-
-```
-
-### 1-3 devm_gpiochip_add_data()
-
-```C
-/**
- * devm_gpiochip_add_data() - Resource manager piochip_add_data()
- * @dev: the device pointer on which irq_chip belongs to.
- * @chip: the chip to register, with chip->base initialized
- * Context: potentially before irqs will work
- *
- * Returns a negative errno if the chip can't be registered, such as
- * because the chip->base is invalid or already associated with a
- * different chip.  Otherwise it returns zero as a success code.
- *
- * The gpio chip automatically be released when the device is unbound.
- */
+/* 传入参数 (&pdev->dev, &port->gc, mxc_gpio_port); */
 int devm_gpiochip_add_data(struct device *dev, struct gpio_chip *chip,
 			   void *data)
-{
-    /* 传入参数 (&pdev->dev, &port->gc, port); */
-	struct gpio_chip **ptr;
+{    
 	int ret;
 
-	ptr = devres_alloc(devm_gpio_chip_release, sizeof(*ptr),
-			     GFP_KERNEL);
-	if (!ptr)
-		return -ENOMEM;
-
 	ret = gpiochip_add_data(chip, data);
-	if (ret < 0) {
-		devres_free(ptr);
-		return ret;
-	}
-
-	*ptr = chip;
-	devres_add(dev, ptr);
 
 	return 0;
 }
-```
 
-### struct gpio_device
 
-```C
-/**
- * struct gpio_device - internal state container for GPIO devices
- * @id: numerical ID number for the GPIO chip
- * @dev: the GPIO device struct
- * @chrdev: character device for the GPIO device
- * @mockdev: class device used by the deprecated sysfs interface (may be
- * NULL)
- * @owner: helps prevent removal of modules exporting active GPIOs
- * @chip: pointer to the corresponding gpiochip, holding static
- * data for this device
- * @descs: array of ngpio descriptors.
- * @ngpio: the number of GPIO lines on this GPIO device, equal to the size
- * of the @descs array.
- * @base: GPIO base in the DEPRECATED global Linux GPIO numberspace, assigned
- * at device creation time.
- * @label: a descriptive name for the GPIO device, such as the part number
- * or name of the IP component in a System on Chip.
- * @data: per-instance data assigned by the driver
- * @list: links gpio_device:s together for traversal
- *
- * This state container holds most of the runtime variable data
- * for a GPIO device and can hold references and live on after the
- * GPIO chip has been removed, if it is still being used from
- * userspace.
- */
-struct gpio_device {
-	int			id;
-	struct device		dev;
-	struct cdev		chrdev;
-	struct device		*mockdev;
-	struct module		*owner;
-	struct gpio_chip	*chip;
-	struct gpio_desc	*descs;
-	int			base;
-	u16			ngpio;
-	char			*label;
-	void			*data;
-	struct list_head        list;
 
-#ifdef CONFIG_PINCTRL
-	/*
-	 * If CONFIG_PINCTRL is enabled, then gpio controllers can optionally
-	 * describe the actual pin range which they serve in an SoC. This
-	 * information would be used by pinctrl subsystem to configure
-	 * corresponding pins for gpio usage.
-	 */
-	struct list_head pin_ranges;
-#endif
-};
-```
-
-### 1-3-1 gpiochip_add_data()
-
-```C
-/**
- * gpiochip_add_data() - register a gpio_chip
- * @chip: the chip to register, with chip->base initialized
- * Context: potentially before irqs will work
- *
- * Returns a negative errno if the chip can't be registered, such as
- * because the chip->base is invalid or already associated with a
- * different chip.  Otherwise it returns zero as a success code.
- *
- * When gpiochip_add_data() is called very early during boot, so that GPIOs
- * can be freely used, the chip->parent device must be registered before
- * the gpio framework's arch_initcall().  Otherwise sysfs initialization
- * for GPIOs will fail rudely.
- *
- * gpiochip_add_data() must only be called after gpiolib initialization,
- * ie after core_initcall().
- *
- * If chip->base is negative, this requests dynamic assignment of
- * a range of valid GPIOs.
- */
 int gpiochip_add_data(struct gpio_chip *chip, void *data)
 {
 	unsigned long	flags;
@@ -874,13 +500,12 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
 	int		base = chip->base;
 	struct gpio_device *gdev;
 
-	/*
-	 * First: allocate and populate the internal stat container, and
-	 * set up the struct device.
-	 */
+	/******** 申请 gpio_device ********/
 	gdev = kzalloc(sizeof(*gdev), GFP_KERNEL);
-	if (!gdev)
-		return -ENOMEM;
+
+    
+    
+    /****** 设置 gpio_device ******/
 	gdev->dev.bus = &gpio_bus_type;
 	gdev->chip = chip;
 	chip->gpiodev = gdev;
@@ -896,12 +521,10 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
 #endif
 
 	gdev->id = ida_simple_get(&gpio_ida, 0, 0, GFP_KERNEL);
-	if (gdev->id < 0) {
-		status = gdev->id;
-		goto err_free_gdev;
-	}
-    /*设置 gpio_device->dev 的名字*/
+   
+    /*设置 gpio_device->dev 的名字 */
 	dev_set_name(&gdev->dev, "gpiochip%d", gdev->id);
+    
     /*初始化device*/
 	device_initialize(&gdev->dev);
 	dev_set_drvdata(&gdev->dev, gdev);
@@ -912,95 +535,40 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
 		gdev->owner = chip->owner;
 	else
 		gdev->owner = THIS_MODULE;
+    
+	/****** 设置 gpio_device 完成 ******/
+    
 
-    /*根据引脚数量，创建n个 gpio_desc 结构，用于描述引脚*/
+    
+    
+    
+    /****** 根据gpio的引脚数量，申请 n个 gpio_desc *******/
 	gdev->descs = kcalloc(chip->ngpio, sizeof(gdev->descs[0]), GFP_KERNEL);
-	if (!gdev->descs) {
-		status = -ENOMEM;
-		goto err_free_gdev;
-	}
 
-	if (chip->ngpio == 0) {
-		chip_err(chip, "tried to insert a GPIO chip with zero lines\n");
-		status = -EINVAL;
-		goto err_free_descs;
-	}
-	
-    /*创建内存并复制一份一样的字符串*/
-	if (chip->label)
-		gdev->label = kstrdup(chip->label, GFP_KERNEL);
-	else
-		gdev->label = kstrdup("unknown", GFP_KERNEL);
-	if (!gdev->label) {
-		status = -ENOMEM;
-		goto err_free_descs;
-	}
-
+	/* 记录每个gpio引脚数量 */
 	gdev->ngpio = chip->ngpio;
-    
-    /* 保存了mxc_gpio_port结构 */
 	gdev->data = data;
-
-	spin_lock_irqsave(&gpio_lock, flags);
-
-	/*
-	 * TODO: this allocates a Linux GPIO number base in the global
-	 * GPIO numberspace for this chip. In the long run we want to
-	 * get *rid* of this numberspace and use only descriptors, but
-	 * it may be a pipe dream. It will not happen before we get rid
-	 * of the sysfs interface anyways.
-	 */
-	if (base < 0) {
-		base = gpiochip_find_base(chip->ngpio);
-		if (base < 0) {
-			status = base;
-			spin_unlock_irqrestore(&gpio_lock, flags);
-			goto err_free_label;
-		}
-		/*
-		 * TODO: it should not be necessary to reflect the assigned
-		 * base outside of the GPIO subsystem. Go over drivers and
-		 * see if anyone makes use of this, else drop this and assign
-		 * a poison instead.
-		 */
-		chip->base = base;
-	}
 	gdev->base = base;
-    
-	/*根据chip->base的某些规则排序，将gpio_deivce存放到全局list中*/
+        
+	/* 
+	 * 根据 [base, base + ngpio - 1] 排序，
+     * 将gpio_deivce 插入 global chips list。
+	 */
 	status = gpiodev_add_to_list(gdev);
-	if (status) {
-		spin_unlock_irqrestore(&gpio_lock, flags);
-		goto err_free_label;
-	}
 
-	spin_unlock_irqrestore(&gpio_lock, flags);
 
-    /*对每个gpio_desc默认标记为输出*/
+    /******* 设置 n个 gpio_desc  *******/
 	for (i = 0; i < chip->ngpio; i++) {
-		struct gpio_desc *desc = &gdev->descs[i];
-		
-        /*每个desc保存父device*/
+        
+		struct gpio_desc *desc = &gdev->descs[i];		
 		desc->gdev = gdev;
-		/*
-		 * REVISIT: most hardware initializes GPIOs as inputs
-		 * (often with pullups enabled) so power usage is
-		 * minimized. Linux code should set the gpio direction
-		 * first thing; but until it does, and in case
-		 * chip->get_direction is not set, we may expose the
-		 * wrong direction in sysfs.
-		 */
         
 		/*
-		 * 翻译：一般来说，芯片会把引脚复位为上拉输入，保证最低功耗。
+		 * 一般来说，芯片会把引脚复位为上拉输入，保证最低功耗。
 		 * linux处理gpio第一步，就是要先设置引脚方向，如不这样做的话，
 		 * 会把错误的方向反馈给sysfs，此时用户cat出来的值是不正确的。
 		 */
 		if (chip->get_direction) {
-			/*
-			 * If we have .get_direction, set up the initial
-			 * direction flag from the hardware.
-			 */
             /*如为null，说明还没设置*/
 			int dir = chip->get_direction(chip, i);
 
@@ -1008,10 +576,6 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
                 /*记录引脚方向为输出，应该是把FLAG_IS_OUT保存在desc->flags*/
 				set_bit(FLAG_IS_OUT, &desc->flags);
 		} else if (!chip->direction_input) {
-			/*
-			 * If the chip lacks the .direction_input callback
-			 * we logically assume all lines are outputs.
-			 */
 			set_bit(FLAG_IS_OUT, &desc->flags);
 		}
 	}
@@ -1020,20 +584,13 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
 	INIT_LIST_HEAD(&gdev->pin_ranges);/*使用pinctrl*/
 #endif
 
-    /*为每个gpio_desc分配一个名字，gc->names为空返回0*/
+    /* 为每个gpio_desc分配名字 */
 	status = gpiochip_set_desc_names(chip);
-	if (status)
-		goto err_remove_from_list;
-
 	status = gpiochip_irqchip_init_valid_mask(chip);
-	if (status)
-		goto err_remove_from_list;
 
+    
 	status = of_gpiochip_add(chip);
-	if (status)
-		goto err_remove_chip;
 
-	acpi_gpiochip_add(chip);
 
 	/*
 	 * By first adding the chardev, and then adding the device,
@@ -1049,107 +606,24 @@ int gpiochip_add_data(struct gpio_chip *chip, void *data)
 			goto err_remove_chip;
 	}
 	return 0;
-
-err_remove_chip:
-	acpi_gpiochip_remove(chip);
-	gpiochip_free_hogs(chip);
-	of_gpiochip_remove(chip);
-	gpiochip_irqchip_free_valid_mask(chip);
-err_remove_from_list:
-	spin_lock_irqsave(&gpio_lock, flags);
-	list_del(&gdev->list);
-	spin_unlock_irqrestore(&gpio_lock, flags);
-err_free_label:
-	kfree(gdev->label);
-err_free_descs:
-	kfree(gdev->descs);
-err_free_gdev:
-	ida_simple_remove(&gpio_ida, gdev->id);
-	/* failures here can mean systems won't boot... */
-	pr_err("%s: GPIOs %d..%d (%s) failed to register\n", __func__,
-	       gdev->base, gdev->base + gdev->ngpio - 1,
-	       chip->label ? : "generic");
-	kfree(gdev);
-	return status;
 }
 ```
 
-### 1-3-1-1 gpiodev_add_to_list()
-
-```C
-	/*根据chip->base的某些规则排序，将gpio_deivce存放到全局list中*/
-/*
- * Add a new chip to the global chips list, keeping the list of chips sorted
- * by range(means [base, base + ngpio - 1]) order.
- *
- * Return -EBUSY if the new chip overlaps with some other chip's integer
- * space.
- */
-static int gpiodev_add_to_list(struct gpio_device *gdev)
-{
-	struct gpio_device *prev, *next;
-
-	if (list_empty(&gpio_devices)) {
-		/* initial entry in list */
-		list_add_tail(&gdev->list, &gpio_devices);
-		return 0;
-	}
-
-	next = list_entry(gpio_devices.next, struct gpio_device, list);
-	if (gdev->base + gdev->ngpio <= next->base) {
-		/* add before first entry */
-		list_add(&gdev->list, &gpio_devices);
-		return 0;
-	}
-
-	prev = list_entry(gpio_devices.prev, struct gpio_device, list);
-	if (prev->base + prev->ngpio <= gdev->base) {
-		/* add behind last entry */
-		list_add_tail(&gdev->list, &gpio_devices);
-		return 0;
-	}
-
-	list_for_each_entry_safe(prev, next, &gpio_devices, list) {
-		/* at the end of the list */
-		if (&next->list == &gpio_devices)
-			break;
-
-		/* add between prev and next */
-		if (prev->base + prev->ngpio <= gdev->base
-				&& gdev->base + gdev->ngpio <= next->base) {
-			list_add(&gdev->list, &prev->list);
-			return 0;
-		}
-	}
-
-	dev_err(&gdev->dev, "GPIO integer space overlap, cannot add chip\n");
-	return -EBUSY;
-}
-```
-
-### 1-3-1-2 of_gpiochip_add()
+### 1-2-1 of_gpiochip_add()
 
 ```C
 int of_gpiochip_add(struct gpio_chip *chip)
 {
 	int status;
 
-	if ((!chip->of_node) && (chip->parent))
-		chip->of_node = chip->parent->of_node;
-
-	if (!chip->of_node)
-		return 0;
-
-    /*为空，默认赋值*/
+    /* 设置xlate函数 */
 	if (!chip->of_xlate) { 
+        /* 2个cells 描述gpio引脚 */
 		chip->of_gpio_n_cells = 2;
 		chip->of_xlate = of_gpio_simple_xlate;
 	}
 
-	if (chip->of_gpio_n_cells > MAX_PHANDLE_ARGS)
-		return -EINVAL;
-
-    
+    /* 并没用到 gpio-ranges,往下不分析 */
 	status = of_gpiochip_add_pin_range(chip);
 	if (status)
 		return status;
@@ -1164,7 +638,7 @@ int of_gpiochip_add(struct gpio_chip *chip)
 }
 ```
 
-### 1-2-1-2-1 of_gpio_simple_xlate()
+### 1-2-1-1 of_gpio_simple_xlate()
 
 ```C
 /**
@@ -1205,7 +679,7 @@ int of_gpio_simple_xlate(struct gpio_chip *gc,
 }
 ```
 
-### 1-2-1-2-2 of_gpiochip_add_pin_range()
+### 1-2-1-1-1 of_gpiochip_add_pin_range()
 
 ```C
 /*
@@ -1323,7 +797,7 @@ static int of_gpiochip_add_pin_range(struct gpio_chip *chip)
 
 ```
 
-### 1-2-1-2-2-1 of_parse_phandle_with_fixed_args()
+### 1-2-1-1-1-1 of_parse_phandle_with_fixed_args()
 
 ```C
 /**
@@ -1423,7 +897,7 @@ static int __of_parse_phandle_with_args(const struct device_node *np,
 }
 ```
 
-### 1-2-1-2-2-2 gpiochip_add_pin_range()
+### 1-2-1-1-1-2 gpiochip_add_pin_range()
 
 ```C
 /**
@@ -1487,3 +961,19 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
 
 	return 0;
 }
+
+```
+
+### 总结
+
+- 多个gpio-controller在dts进行描述，通过 名为 “platform” bus 的 driver 进行 probe。
+
+  - 确认soc型号，获取其gpio寄存器信息。
+  - 申请 gpiochip，根据soc信息设置 gpiochip，设置gpio寄存器组的地址，设置中间层函数（写方向，写电平，读状态）
+  - 申请gpio_device，根据gpiochip设置gpio_device。
+    - 根据引脚数量申请gpio_desc，设置gpio_desc，并全部挂入gpio_device的list。
+
+  - 当存在"gpio-ranges"属性，则gpio将与pinctrl建立联系，这样的情况下，用户节点（如led，key）就不需要写入"pinctrl-names"，"pinctrl-0"这样的属性了。
+  - 不当存在"gpio-ranges"属性，则需用户节点写入"pinctrl-names"，"pinctrl-0"这样的属性，这样会提前进行really probe，解析和设置pinctrl。
+
+  
