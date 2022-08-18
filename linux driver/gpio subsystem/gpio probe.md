@@ -934,4 +934,6 @@ int gpiochip_add_pin_range(struct gpio_chip *chip, const char *pinctl_name,
   - 当存在"gpio-ranges"属性，则gpio将与pinctrl建立联系，这样的情况下，用户节点（如led，key）就不需要写入"pinctrl-names"，"pinctrl-0"这样的属性了。
   - 不当存在"gpio-ranges"属性，则需用户节点写入"pinctrl-names"，"pinctrl-0"这样的属性，这样会提前进行really probe，解析和设置pinctrl。
 
-  
+
+- gpio子系统中，会对soc的所有gpio顺序排序，这样的好处是，只需提供gpio号，就能找到gpio-controller对应的gpio_device，并找到pin对应的gpio_desc。
+

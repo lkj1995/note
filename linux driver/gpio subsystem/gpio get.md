@@ -268,5 +268,5 @@ static int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
   
   
   
-- 在dt中，ngpios意思是：gpio寄存器的可使用的数量，即寄存器是32位宽，但只有18位对应了控制引脚，1个gpio-controller控制18个pin，设置"ngpios = <18>，通知driver只有18个pin。
+- 在dt中，”ngpios”为gpio寄存器的可使用的数量，即寄存器是32位宽，但只有18位对应了控制引脚，1个gpio-controller控制18个pin，设置"ngpios = <18>，通知driver只有18个pin。
 
