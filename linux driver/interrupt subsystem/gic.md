@@ -569,7 +569,7 @@ unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
 }
 ```
 
-###### 3-1-3-1 of_irq_parse_one
+###### 3-1-3-1 of_irq_parse_one()
 
 ```C
 /* 
@@ -621,7 +621,7 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 }
 ```
 
-###### 3-1-3-2 irq_create_of_mapping
+###### 3-1-3-2 irq_create_of_mapping()
 
 ```C
 unsigned int irq_create_of_mapping(struct of_phandle_args *irq_data)
@@ -886,7 +886,7 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
   - 统计使用的irq数量。
   - 解析子节点在dt中的"interrupts"属性的内容，<SPI，hwirq，flag>
   - 寻找空闲virq，根据virq申请irq_desc，建立与hwirq的映射关系，并保存在irq_domain。
-  - 申请resource，将属性内容保存在resource
+  - 申请resource，将“reg”属性的内容保存在resource
 
 4 当子节点driver调用request_irq
 

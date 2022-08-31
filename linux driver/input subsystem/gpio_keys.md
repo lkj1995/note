@@ -548,14 +548,81 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 }
 ```
 
+### 4 input_register_device()
 
+```C
+int input_register_device(struct input_dev *dev)
+{
+	struct input_devres *devres = NULL;
+	struct input_handler *handler;
+	unsigned int packet_size;
+	const char *path;
+	int error;
+
+    /* 动态自动释放 */
+	if (dev->devres_managed) {
+		devres = devres_alloc(devm_input_device_unregister,
+				      sizeof(struct input_devres), GFP_KERNEL);
+		devres->input = dev;
+	}
+
+	/* 每个input event都要支持EV_SYN */
+	__set_bit(EV_SYN, dev->evbit);
+
+	/* 计算事件预估数量，提供handler预估，需申请多少缓存 */
+	packet_size = input_estimate_events_per_packet(dev);
+	if (dev->hint_events_per_packet < packet_size)
+		dev->hint_events_per_packet = packet_size;
+
+    /* 根据数量，申请 input_value */
+	dev->max_vals = dev->hint_events_per_packet + 2;
+	dev->vals = kcalloc(dev->max_vals, sizeof(*dev->vals), GFP_KERNEL);
+
+
+    /* 使能repeat */
+	if (!dev->rep[REP_DELAY] && !dev->rep[REP_PERIOD])
+		input_enable_softrepeat(dev, 250, 33);
+
+	if (!dev->getkeycode)
+		dev->getkeycode = input_default_getkeycode;
+
+	if (!dev->setkeycode)
+		dev->setkeycode = input_default_setkeycode;
+
+	error = device_add(&dev->dev);
+
+
+	path = kobject_get_path(&dev->dev.kobj, GFP_KERNEL);
+	pr_info("%s as %s\n",
+		dev->name ? dev->name : "Unspecified device",
+		path ? path : "N/A");
+	kfree(path);
+
+	/* 把设备挂到全局的input子系统设备链表 input_dev_list */ 
+	list_add_tail(&dev->node, &input_dev_list);
+    
+
+   /*  input设备在增加到input_dev_list链表上之后，会查找 
+    * input_handler_list事件处理链表上的handler进行匹配，所有的
+    * input device 都挂在input_dev_list上，所有类型的事件都挂在 
+    * input_handler_list上，进行match。
+    */ 
+	list_for_each_entry(handler, &input_handler_list, node)
+		input_attach_handler(dev, handler);
+
+	if (dev->devres_managed) {
+		devres_add(dev->dev.parent, devres);
+	}
+	return 0;
+}
+```
 
 ### 总结
 
 - 先解析dt中"gpio-keys"节点，申请，并将解析的内容gpio_keys_platform_data。
 - 再解析"gpio-keys"节点的子节点，根据子节点数量，申请多个gpio_keys_button[]，将每个button(子节点)解析的内容保存，并将gpio_keys_button[]保存在 gpio_keys_platform_data->buttons。
 
-- 申请input_dev，并根据上述解析的内容，设置和注册input_dev。
+- 申请input_dev，并根据上述解析的内容，设置和注册input_dev。( 调用 input_register_device() 函数 )
 
 - 调用gpio子系统的函数，通过gpio号，找到gpio_desc，配置好引脚。
 

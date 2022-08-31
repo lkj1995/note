@@ -63,5 +63,7 @@ postcore_initcall(i2c_init);/*系统启动时，会先执行该init*/
 
 ### 总结
 
-1. 重要的工作在init函数完成，创建了i2c_bus总线和一个在i2c_bus总线的dummy_driver。
-2. 重要的操作函数都被导出，可用于其他driver。
+- 创建了i2c_bus总线和一个在i2c_bus总线的dummy_driver，操作函数被导出。
+
+
+
